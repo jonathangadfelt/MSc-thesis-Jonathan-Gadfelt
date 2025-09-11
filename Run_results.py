@@ -52,7 +52,7 @@ Results_path = os.path.join(base_dir, "Results")
 os.makedirs(N_results_path, exist_ok=True)
 weather_years = All_data['solar'].index.year.unique()
 
-Test_name = ""
+Test_name = "_hMC"
 
 #%%         RUN EXPANSION MODEL
 " Running just one time for testing purposes "
@@ -138,23 +138,23 @@ if New_results:
     file_name = f"optimized_capacities_exp_model_d{d_year_exp}_h{h_year_exp}{Test_name}.csv"
     opt_capacities_df.to_csv(os.path.join(Results_path, file_name))
 else:
-    Name = f"optimized_capacities_exp_model_d{d_year_exp}_h{h_year_exp}.csv"
+    Name = f"optimized_capacities_exp_model_d{d_year_exp}_h{h_year_exp}{Test_name}.csv"
     opt_capacities_df = pd.read_csv(os.path.join(Results_path, Name), header=[0,1], index_col=0)
 
 #print(opt_capacities_df.head(7))
 
 ##%        RUN DISPATCH MODEL
 " Running just one time for testing purposes "
-# N_dispatch_class = Build_dispatch_network(
-#     opt_capacities_df=opt_capacities_df.loc["75%"],
-#     weather_year=2012, hydro_year=h_year_dispatch, demand_year=d_year_dispatch,
-#     data=All_data, cost_data=Cost, setup=setup_dispatch)
+N_dispatch_class = Build_dispatch_network(
+    opt_capacities_df=opt_capacities_df.loc["75%"],
+    weather_year=2012, hydro_year=h_year_dispatch, demand_year=d_year_dispatch,
+    data=All_data, cost_data=Cost, setup=setup_dispatch)
 
-# N_dispatch = N_dispatch_class.network
+N_dispatch = N_dispatch_class.network
 
-# silent_optimize(N_dispatch)
+silent_optimize(N_dispatch)
 
-# print_Results(N_dispatch)
+print_Results(N_dispatch)
 
 ##%        RUN ROLLING HORIZON
 " Running for all weather years "
@@ -196,7 +196,42 @@ if save_networks_RH:
         N_rlh.export_to_netcdf(os.path.join(N_results_path, network_name_rlh))
         N_dispatch.export_to_netcdf(os.path.join(N_results_path, network_name_pf))
 
+" Running just for one year for testing purposes "
+#%%
+test_year = 1984
 
+N_dispatch_class = Build_dispatch_network_hMC(
+    opt_capacities_df=opt_capacities_df.loc["75%"], # HUSK AT SØRG FOR OPT CAPACITIES ER LOADED FØRST 
+    weather_year=test_year, hydro_year=h_year_dispatch, demand_year=d_year_dispatch,
+    data=All_data, cost_data=Cost, setup=setup_dispatch)
 
+N_dispatch = N_dispatch_class.network
+silent_optimize(N_dispatch)
 
+N_rlh_class = Build_dispatch_network_hMC(
+    opt_capacities_df=opt_capacities_df.loc["75%"],
+    weather_year=test_year, 
+    hydro_year=h_year_dispatch, 
+    demand_year=d_year_dispatch,
+    data=All_data, cost_data=Cost, setup=setup_dispatch)
+N_rlh = N_rlh_class.network
+
+N_rlh.optimize.optimize_with_rolling_horizon(
+    snapshots=N_rlh.snapshots,
+    horizon=(24*d_horizon),               
+    overlap= h_overlap,                
+    solver_name="gurobi", solver_options={"OutputFlag": 0})
+
+#%%       COMPARE RESULTS
+# Get marginal prices for N_dispatch and N_rlh (rolling horizon)
+MC_N_pf = N_dispatch.buses_t['marginal_price'].iloc[:, 0]
+MC_N_rlh = N_rlh.buses_t['marginal_price'].iloc[:, 0]
+tot_cost_Np = (MC_N_pf * N_dispatch.loads_t.p_set['load']).sum() / 1e6
+tot_cost_Nr = (MC_N_rlh * N_rlh.loads_t.p_set["load"]).sum() / 1e6
+print(f"Hydro year {h_year_dispatch}, demand year {d_year_dispatch} and weather year {test_year}:")
+print("Total cost (N_perfect) [MEUR]:", round(tot_cost_Np, 2))
+print("Total cost (N_rolling) [MEUR]:", round(tot_cost_Nr, 2))
+
+total_difference = tot_cost_Np - tot_cost_Nr
+print("Total cost difference PF minus RLH [MEUR]:", round(total_difference, 2))
 

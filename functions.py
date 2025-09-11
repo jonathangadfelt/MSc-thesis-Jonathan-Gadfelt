@@ -7,36 +7,11 @@ import sys
 import logging
 from contextlib import redirect_stdout
 import tqdm
+from pathlib import Path
 np.set_printoptions(suppress=True)
 
 
-
-def silent_optimize(network, solver_name="gurobi", solver_options=None):
-    """
-    Optimize a PyPSA network silently: suppress logs, progress bars, and Gurobi messages.
-    
-    Parameters:
-    - network: PyPSA Network object
-    - solver_name: Solver name (default: "gurobi")
-    - solver_options: Dictionary of solver options (default: {"OutputFlag": 0})
-    """
-    if solver_options is None:
-        solver_options = {"OutputFlag": 0}
-
-    # Suppress PyPSA, Linopy, Gurobi logging output
-    for name in ["pypsa", "linopy", "gurobipy"]:
-        logging.getLogger(name).setLevel(logging.CRITICAL)
-
-    # Monkey-patch tqdm to disable progress bars
-    tqdm.tqdm = lambda *args, **kwargs: iter(args[0]) if args else iter([])
-
-    # Redirect stdout to suppress Gurobi messages
-    with open(os.devnull, 'w') as fnull:
-        with redirect_stdout(fnull):
-            network.optimize(solver_name=solver_name, solver_options=solver_options)
-            #print("Objective value:", network.objective)
-
-
+"  ____________________ LOAD ALL DATA ____________________ "
 
 def load_all_data():
     data = {
@@ -73,6 +48,8 @@ def load_all_data():
     data["hydro_inflow"] = hydro_inflow
 
     return data
+
+" ____________________ COST DATA CLASS ____________________ "
 
 class CostGeneration:
     def __init__(self, year: int = 2020):
@@ -123,6 +100,11 @@ class CostGeneration:
         discount rate r """
         return r / (1.0 - 1.0 / (1.0 + r) ** n)
 
+All_data = load_all_data()
+Cost = CostGeneration(year=2025)
+
+" ____________________ PRINT RESULTS FUNCTION ____________________ "
+
 def print_Results(N):
     print("\nObjective value (MEUR):", round(N.objective / 1e6))
     print("\nInstalled generator capacities (MW):")
@@ -136,10 +118,38 @@ def print_Results(N):
 
     return
 
-All_data = load_all_data()
-Cost = CostGeneration(year=2025)
 
-# PLOTTTING FUNCTIONS
+
+" ____________________ SILENT OPTIMIZE ____________________ "
+
+def silent_optimize(network, solver_name="gurobi", solver_options=None):
+    """
+    Optimize a PyPSA network silently: suppress logs, progress bars, and Gurobi messages.
+    
+    Parameters:
+    - network: PyPSA Network object
+    - solver_name: Solver name (default: "gurobi")
+    - solver_options: Dictionary of solver options (default: {"OutputFlag": 0})
+    """
+    if solver_options is None:
+        solver_options = {"OutputFlag": 0}
+
+    # Suppress PyPSA, Linopy, Gurobi logging output
+    for name in ["pypsa", "linopy", "gurobipy"]:
+        logging.getLogger(name).setLevel(logging.CRITICAL)
+
+    # Monkey-patch tqdm to disable progress bars
+    tqdm.tqdm = lambda *args, **kwargs: iter(args[0]) if args else iter([])
+
+    # Redirect stdout to suppress Gurobi messages
+    with open(os.devnull, 'w') as fnull:
+        with redirect_stdout(fnull):
+            network.optimize(solver_name=solver_name, solver_options=solver_options)
+            #print("Objective value:", network.objective)
+
+
+" ____________________ PLOTTING FUNCTIONS ____________________ "
+
 def plot_electricity_mix(network, colors=None, save_plot=False, plot_title='Electricity mix'):
     """
     Plots the electricity mix as a pie chart for a given PyPSA network.
@@ -183,4 +193,26 @@ def plot_electricity_mix(network, colors=None, save_plot=False, plot_title='Elec
     if save_plot:
         plt.savefig(f'./Plots/electricity_mix.png', dpi=300, bbox_inches='tight')
     plt.show()
+
+
+" ____________________ LOAD NETWORK RESULTS ____________________ "
+
+def load_networks(folder_name: str, ext: str = ".nc"):
+    """
+    Load all PyPSA networks from Network_results/<folder_name>.
+    Keys are the file stems. Returns (networks_dict, names_list).
+    """
+    path = Path.cwd() / "Network_results" / folder_name
+    if not path.exists():
+        raise FileNotFoundError(f"Folder not found: {path}")
+    files = sorted(path.glob(f"*{ext}"))
+    if not files:
+        print(f"No {ext} files found in {path}")
+        return {}, []
+    networks, names = {}, []
+    for p in files:
+        key = p.stem  # e.g., "N_w-1984_d-2018_h-2007_regionA"
+        networks[key] = pypsa.Network(str(p))
+        names.append(key)
+    return networks, names
 
