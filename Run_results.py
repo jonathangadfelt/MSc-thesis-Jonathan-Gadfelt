@@ -52,22 +52,23 @@ Results_path = os.path.join(base_dir, "Results")
 os.makedirs(N_results_path, exist_ok=True)
 weather_years = All_data['solar'].index.year.unique()
 
+Test_name = ""
 
 #%%         RUN EXPANSION MODEL
 " Running just one time for testing purposes "
-N_class = Build_network_capacity_exp_bat_S_unit(weather_year=w_year_exp, hydro_year=h_year_exp, demand_year=d_year_exp,
-    data=All_data, cost_data=Cost, setup=setup_exp)
-N = N_class.network
+# N_class = Build_network_capacity_exp(weather_year=w_year_exp, hydro_year=h_year_exp, demand_year=d_year_exp,
+#     data=All_data, cost_data=Cost, setup=setup_exp)
+# N = N_class.network
 
-silent_optimize(N)
+# silent_optimize(N)
 
-print_Results(N)
+# print_Results(N)
 
 " Running for all weather years "
 
 Saved_Networks_names = []
 
-save_network = False  
+save_network = False
 if save_network:
 
     for year in weather_years:
@@ -79,7 +80,7 @@ if save_network:
         #print(f"\nResults for weather year {year}:\n")
         #print_Results(N)
 
-        network_name = f"N_w-{year}_d-{d_year_exp}_h-{h_year_exp}_{region}_bat_S_unit.nc"
+        network_name = f"N_w-{year}_d-{d_year_exp}_h-{h_year_exp}_{region}{Test_name}.nc"
         N.export_to_netcdf(os.path.join(N_results_path, network_name))
         
         Saved_Networks_names.append(network_name)
@@ -87,6 +88,7 @@ if save_network:
 
 ##%        Read saved networks an create summary of capacities 
 " Read saved networks and create summary of capacities "
+
 New_results = False
 if New_results:
     # Initialize
@@ -96,7 +98,7 @@ if New_results:
     # Load network files
     for year in weather_years:
         net_name = f'N_{year}_{region}'
-        N_file_name = f"N_w-{year}_d-{d_year_exp}_h-{h_year_exp}_{region}_bat_S_unit.nc"
+        N_file_name = f"N_w-{year}_d-{d_year_exp}_h-{h_year_exp}_{region}{Test_name}.nc"
         file_path = os.path.join(N_results_path, N_file_name)
         if os.path.exists(file_path):
             networks_exp[net_name] = pypsa.Network(file_path)
@@ -133,7 +135,7 @@ if New_results:
     opt_capacities_df = pd.concat(stats_dict, axis=1)
 
     # Save final result
-    file_name = f"optimized_capacities_exp_model_d{d_year_exp}_h{h_year_exp}_bat_S_unit.csv"
+    file_name = f"optimized_capacities_exp_model_d{d_year_exp}_h{h_year_exp}{Test_name}.csv"
     opt_capacities_df.to_csv(os.path.join(Results_path, file_name))
 else:
     Name = f"optimized_capacities_exp_model_d{d_year_exp}_h{h_year_exp}.csv"
@@ -154,18 +156,15 @@ else:
 
 # print_Results(N_dispatch)
 
-
+##%        RUN ROLLING HORIZON
 " Running for all weather years "
-
-Saved_Networks_names_PF = []
-Saved_Networks_names_RHL = []
 
 d_horizon = 7 
 h_overlap = 0  
 
-save_network = False  
+save_networks_RH = False  
 
-if save_network:
+if save_networks_RH:
 
     for year in weather_years:
 
@@ -192,16 +191,11 @@ if save_network:
             solver_name="gurobi", solver_options={"OutputFlag": 0})
 
 
-        network_name_rlh = f"N_RHL_w-{year}_d-{d_year_dispatch}_h-{h_year_dispatch}_{region}.nc"
-        network_name_pf = f"N_PF_w-{year}_d-{d_year_dispatch}_h-{h_year_dispatch}_{region}.nc"
+        network_name_rlh = f"N_RHL_w-{year}_d-{d_year_dispatch}_h-{h_year_dispatch}_{region}{Test_name}.nc"
+        network_name_pf = f"N_PF_w-{year}_d-{d_year_dispatch}_h-{h_year_dispatch}_{region}{Test_name}.nc"
         N_rlh.export_to_netcdf(os.path.join(N_results_path, network_name_rlh))
         N_dispatch.export_to_netcdf(os.path.join(N_results_path, network_name_pf))
 
-        print(f"Saved networks for year {year}: {network_name_rlh}, {network_name_pf}")
-
-        Saved_Networks_names_RHL.append(network_name_rlh) # SKAL DE HER STADIG BRUGES TIL NOGET?
-
-        Saved_Networks_names_PF.append(network_name_pf)
 
 
 

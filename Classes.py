@@ -194,6 +194,7 @@ class Build_network_capacity_exp:
                     cyclic_state_of_charge=False,
                     state_of_charge_initial= (12700 * 1300)*0.3 ,  # Initial storage capacity in MWh
                     inflow=self.data_dict[self.region]['hydro'].values.flatten(),
+                    marginal_cost=self.costs.at["onwind", "marginal_cost"]*1.2,  # higher than wind to prioritize wind usage
                     capital_cost=0
                     )
 
