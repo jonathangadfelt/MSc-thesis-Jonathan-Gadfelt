@@ -150,69 +150,113 @@ def silent_optimize(network, solver_name="gurobi", solver_options=None):
 
 " ____________________ PLOTTING FUNCTIONS ____________________ "
 
-def plot_electricity_mix(network, colors=None, save_plot=False, plot_title='Electricity mix'):
-    """
-    Plots the electricity mix as a pie chart for a given PyPSA network.
-    """
-    labels = []
-    sizes = []
+def plot_electricity_mix(network, save_plot=False, plot_title='Electricity mix', min_cap=10):
+    # generator capacity by carrier
+    gen_caps = (network.generators[["carrier","p_nom_opt"]]
+                .groupby("carrier")["p_nom_opt"].sum())
 
-    # Add generator capacities
-    for generator in network.generators.index:
-        cap = network.generators.p_nom_opt[generator]
-        if cap > 10:
-            labels.append(generator)
-            sizes.append(cap)
+    # add hydro StorageUnit power capacity (if present)
+    if not network.storage_units.empty:
+        hydro_cap = network.storage_units.loc[
+            network.storage_units.carrier == "hydro", "p_nom_opt"
+        ].sum()
+        if hydro_cap > 0:
+            gen_caps = gen_caps.add(pd.Series({"hydro": hydro_cap}), fill_value=0)
 
-    # Add hydro storage unit capacity (if present)
-    if hasattr(network, "storage_units") and not network.storage_units.empty:
-        hydro_mask = (network.storage_units.carrier == "hydro")
-        if hydro_mask.any():
-            hydro_capacity = network.storage_units.loc[hydro_mask, "p_nom_opt"].sum()
-            if hydro_capacity > 10:
-                labels.append("hydro")
-                sizes.append(hydro_capacity)
+    # drop load shedding and tiny slices
+    ls_names = {c for c in gen_caps.index if c.lower().replace("_"," ") == "load shedding"}
+    gen_caps = gen_caps.drop(labels=list(ls_names), errors="ignore")
+    gen_caps = gen_caps[gen_caps > min_cap]
 
-    # Map each label to its color if provided
-    if colors is not None:
-        pie_colors = [colors.get(label, None) for label in labels]
-    else:
-        pie_colors = None
+    if gen_caps.empty:
+        print("Nothing to plot.")
+        return
 
-    plt.pie(
-        sizes,
-        labels=labels,
-        wedgeprops={'linewidth': 0},
-        autopct='%1.1f%%',
-        colors=pie_colors
-    )
+    labels = gen_caps.index.tolist()
+    sizes  = gen_caps.values.tolist()
+
+    # use carrier colors from the network (keeps order aligned with labels)
+    pie_colors = (network.carriers.reindex(labels)["color"].tolist()
+                  if "color" in network.carriers else None)
+
+    plt.figure()
+    plt.pie(sizes, labels=labels, autopct='%1.1f%%',
+            colors=pie_colors, wedgeprops={'linewidth': 0})
     plt.axis('equal')
     plt.title(plot_title, y=1.07)
     plt.tight_layout()
-
     if save_plot:
-        plt.savefig(f'./Plots/electricity_mix.png', dpi=300, bbox_inches='tight')
+        Path("Plots").mkdir(exist_ok=True)
+        plt.savefig("Plots/electricity_mix.png", dpi=300, bbox_inches="tight")
+    plt.show()
+
+
+def plot_generator_capacity(results_df, generator, type, region, d_year_exp, h_year_exp):
+    """
+    Plot capacity of a selected generator over years as bar and line plots.
+
+    Parameters
+    ----------
+    results_df : pd.DataFrame
+        MultiIndex DataFrame with (component, technology) columns, years as index.
+    generator : str
+        Name of the generator technology, e.g. 'onwind', 'solar'.
+    region : str
+        Region string for plot title.
+    d_year_exp : int
+        Demand year used in the experiment.
+    h_year_exp : int
+        Hydro year used in the experiment.
+    """
+    # Bar plot
+    results_df[(type, generator)].plot(
+        kind='bar', figsize=(10, 5),
+        title=f'{generator.capitalize()} Capacity Over Years - r: {region}, d: {d_year_exp}, h: {h_year_exp}'
+    )
+    plt.xlabel('Year')
+    plt.ylabel('Capacity (MW)')
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+
+    # Line plot
+    plt.figure(figsize=(10, 5))
+    plt.plot(results_df.index, results_df[(type, generator)].values, marker='o')
+    plt.xlabel("Year")
+    plt.ylabel(f"{generator.capitalize()} Capacity (MW)")
+    plt.title(f"{generator.capitalize()} Capacity Over Years - r: {region}, d: {d_year_exp}, h: {h_year_exp}")
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
     plt.show()
 
 
 " ____________________ LOAD NETWORK RESULTS ____________________ "
 
-def load_networks(folder_name: str, ext: str = ".nc"):
+def load_networks(folder_name: str, weather_years: list[int], region: str = "ESP", ext: str = ".nc"):
     """
-    Load all PyPSA networks from Network_results/<folder_name>.
-    Keys are the file stems. Returns (networks_dict, names_list).
+    Load PyPSA networks for given weather_years from Network_results/<folder_name>.
+    Keys in the dict are the years (int). Returns dict {year: Network}.
     """
     path = Path.cwd() / "Network_results" / folder_name
     if not path.exists():
         raise FileNotFoundError(f"Folder not found: {path}")
+
     files = sorted(path.glob(f"*{ext}"))
     if not files:
         print(f"No {ext} files found in {path}")
-        return {}, []
-    networks, names = {}, []
-    for p in files:
-        key = p.stem  # e.g., "N_w-1984_d-2018_h-2007_regionA"
-        networks[key] = pypsa.Network(str(p))
-        names.append(key)
-    return networks, names
+        return {}
+
+    if len(files) != len(weather_years):
+        print(f"Warning: {len(files)} files but {len(weather_years)} years — check alignment")
+
+    networks = {}
+    for year, f in zip(weather_years, files):
+        n = pypsa.Network(str(f))
+        n.name = f.stem       # file name without .nc
+        networks[year] = n
+        print(f"Loaded N_{year} from {f.name}")
+
+    return networks
+
+
 
