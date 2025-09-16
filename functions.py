@@ -230,6 +230,12 @@ def plot_generator_capacity(results_df, generator, type, region, d_year_exp, h_y
     plt.show()
 
 
+" ____________________ Unique prices ____________________ "
+def unique_prices(network):
+    prices = network.buses_t.marginal_price["electricity bus"].unique().round(1)
+    return sorted(float(p) for p in prices)
+
+
 " ____________________ LOAD NETWORK RESULTS ____________________ "
 
 def load_networks(folder_name: str, weather_years: list[int], region: str = "ESP", ext: str = ".nc"):
