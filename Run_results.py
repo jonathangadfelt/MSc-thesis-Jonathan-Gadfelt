@@ -52,7 +52,7 @@ Results_path = os.path.join(base_dir, "Results")
 os.makedirs(N_results_path, exist_ok=True)
 weather_years = All_data['solar'].index.year.unique()
 
-Test_name = "_hMC"
+Test_name = "_gas_noise"  # Name to append to files for identification
 
 #%%         RUN EXPANSION MODEL
 " Running just one time for testing purposes "
@@ -68,11 +68,11 @@ Test_name = "_hMC"
 
 Saved_Networks_names = []
 
-save_network = False
+save_network = True
 if save_network:
 
     for year in weather_years:
-        N = Build_network_capacity_exp(weather_year=year, hydro_year=h_year_exp, demand_year=d_year_exp,
+        N = Build_network_capacity_exp_gas(weather_year=year, hydro_year=h_year_exp, demand_year=d_year_exp,
             data=All_data, cost_data=Cost, setup=setup_exp).network
 
         silent_optimize(N)
@@ -89,7 +89,7 @@ if save_network:
 ##%        Read saved networks an create summary of capacities 
 " Read saved networks and create summary of capacities "
 
-New_results = False
+New_results = True  # Set to False to load existing results file
 if New_results:
     # Initialize
     optmized_network_names_exp = []
@@ -143,20 +143,20 @@ else:
 
 #print(opt_capacities_df.head(7))
 
-##%        RUN DISPATCH MODEL
+#%%        RUN DISPATCH MODEL
 " Running just one time for testing purposes "
-N_dispatch_class = Build_dispatch_network(
-    opt_capacities_df=opt_capacities_df.loc["75%"],
-    weather_year=2012, hydro_year=h_year_dispatch, demand_year=d_year_dispatch,
-    data=All_data, cost_data=Cost, setup=setup_dispatch)
+# N_dispatch_class = Build_dispatch_network(
+#     opt_capacities_df=opt_capacities_df.loc["75%"],
+#     weather_year=2012, hydro_year=h_year_dispatch, demand_year=d_year_dispatch,
+#     data=All_data, cost_data=Cost, setup=setup_dispatch)
 
-N_dispatch = N_dispatch_class.network
+# N_dispatch = N_dispatch_class.network
 
-silent_optimize(N_dispatch)
+# silent_optimize(N_dispatch)
 
-print_Results(N_dispatch)
+# print_Results(N_dispatch)
 
-##%        RUN ROLLING HORIZON
+#%%        RUN ROLLING HORIZON
 " Running for all weather years "
 
 d_horizon = 7 
@@ -198,7 +198,7 @@ if save_networks_RH:
 
 " Running just for one year for testing purposes "
 #%%
-test_year = 1984
+test_year = 1995
 
 N_dispatch_class = Build_dispatch_network_hMC(
     opt_capacities_df=opt_capacities_df.loc["75%"], # HUSK AT SØRG FOR OPT CAPACITIES ER LOADED FØRST 

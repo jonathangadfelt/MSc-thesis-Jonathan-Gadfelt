@@ -1,4 +1,5 @@
 from functions import *
+np.random.seed(1) 
 
 class Build_network_capacity_exp:
     def __init__(
@@ -225,6 +226,233 @@ class Build_network_capacity_exp:
 
         return extracted  
 
+class Build_network_capacity_exp_gas:
+    def __init__(
+        self,
+        weather_year: int = 2011,
+        hydro_year: int = 2011,
+        demand_year: int = 2018,
+        data: dict = None,
+        cost_data: tuple = None,
+        setup: dict = None
+    ):
+        if setup is None:
+            setup = {
+                'NOR': {
+                    'OCGT': True,
+                    'CCGT': False,
+                    'battery storage': True,
+                    'onwind': True,
+                    'offwind': False,
+                    'solar': True,
+                    'electrolysis': True,
+                    'fuel cell': True,
+                    'Hydrogen storage': True,
+                    'Reservoir hydro storage': True,
+                    'load shedding': True
+                }
+            }
+
+        self.weather_year = weather_year
+        self.hydro_year = hydro_year
+        self.demand_year = demand_year
+        self.setup = setup
+        self.region = list(setup.keys())[0]  # Single region expected
+
+        self.costs = cost_data.costs
+        self.cost_units = cost_data.units
+
+        self.all_data = data if data is not None else load_all_data()
+        self.data_dict = {self.region: self.extract_data(self.region, self.weather_year, self.hydro_year, self.demand_year)}
+        
+        self.network = pypsa.Network()
+        self.hours_in_year = pd.date_range(f'{weather_year}-01-01 00:00', f'{weather_year}-12-31 23:00', freq='h')
+        if len(self.hours_in_year) > 8760:
+            self.hours_in_year = self.hours_in_year[self.hours_in_year.strftime('%m-%d') != '02-29']
+        self.network.set_snapshots(self.hours_in_year.values)
+
+        self.carriers = [
+            'gas', 'onwind', 'offwind', 'solar',
+            'battery charge', 'battery discharge', 'hydro',
+            'electrolysis', 'fuel cell', 'hydrogen', 'load shedding'
+        ]
+
+        self.colors = {
+            'gas': 'gray', 'onwind': 'lightblue', 'offwind': 'dodgerblue', 'load shedding': 'red',
+            'solar': 'orange', 'battery charge': 'gold', 'battery discharge': 'darkorange',
+            'electrolysis': 'green', 'fuel cell': 'limegreen', 'hydrogen': 'deepskyblue', 'hydro': 'slateblue'
+        }
+
+        self.network.add("Carrier",
+            self.carriers,
+            color=[self.colors[c] for c in self.carriers],
+            co2_emissions=[self.costs.at[c, "CO2 intensity"] if c in self.costs.index else 0.0 for c in self.carriers]
+        )
+
+
+        self.network.add("Bus", 'electricity bus')
+        self.network.add("Bus", 'hydrogen bus')
+        self.network.add("Load", 'load',
+                         bus='electricity bus',
+                         p_set=self.data_dict[self.region]['demand'].values.flatten()
+                         )
+
+
+        technologies = self.setup[self.region].keys()
+        for tech in technologies:
+            if not self.setup[self.region][tech]:
+                continue
+
+            if tech in ['OCGT', 'CCGT']:
+                self.network.add("Generator", tech,
+                    bus='electricity bus',
+                    p_nom_extendable=True,
+                    carrier='gas',
+                    capital_cost=self.costs.at[tech, "capital_cost"],
+                    marginal_cost=self.costs.at[tech, "marginal_cost"] + 0.1 * np.random.uniform(1, 10) # Adding small random cost to break symmetry
+                    )
+
+            elif tech == 'load shedding':
+                self.network.add("Generator", tech,
+                    bus="electricity bus",
+                    p_nom_extendable=True,
+                    marginal_cost=2000,   # €/MWh, can adjust based on VoLL
+                    capital_cost=0,
+                    carrier="load shedding"
+                    )
+                
+            elif tech == 'solar':
+                self.network.add("Generator", tech,
+                    bus='electricity bus',
+                    p_nom_extendable=True,
+                    carrier='solar',
+                    capital_cost=self.costs.at[tech, "capital_cost"],
+                    marginal_cost=self.costs.at[tech, "marginal_cost"],
+                    p_max_pu=self.data_dict[self.region]['solar'].values.flatten()
+                    )
+
+            elif tech == 'onwind':
+                self.network.add("Generator", tech,
+                    bus='electricity bus',
+                    p_nom_extendable=True,
+                    carrier='onwind',
+                    capital_cost=self.costs.at[tech, "capital_cost"],
+                    marginal_cost=self.costs.at[tech, "marginal_cost"],
+                    p_max_pu=self.data_dict[self.region]['onwind'].values.flatten()
+                    )
+
+            elif tech == 'offwind':
+                self.network.add("Generator", tech,
+                    bus='electricity bus',
+                    p_nom_extendable=True,
+                    carrier='offwind',
+                    capital_cost=self.costs.at[tech, "capital_cost"],
+                    marginal_cost=self.costs.at[tech, "marginal_cost"],
+                    p_max_pu=self.data_dict[self.region]['offwind'].values.flatten()
+                    )
+
+            elif tech == 'battery storage':
+                self.network.add("Bus", 'battery bus')
+
+                self.network.add("Link", 'battery charge',
+                    bus0='electricity bus',
+                    bus1='battery bus',
+                    carrier='battery charge',
+                    p_nom_extendable=True,
+                    capital_cost=self.costs.at["battery inverter", "capital_cost"]/2,    # Divide by two as only one inverter will be baught in reality
+                    efficiency=self.costs.at["battery inverter", "efficiency"]
+                    )
+
+                self.network.add("Link", 'battery discharge',
+                    bus0='battery bus',
+                    bus1='electricity bus',
+                    carrier='battery discharge',
+                    p_nom_extendable=True,
+                    capital_cost=self.costs.at["battery inverter", "capital_cost"]/2,     # Divide by two as only one inverter will be baught in reality
+                    efficiency=self.costs.at["battery inverter", "efficiency"]
+                    )        
+
+                self.network.add("Store", tech,
+                    bus='battery bus',
+                    e_nom_extendable=True,
+                    e_cyclic=False,
+                    capital_cost=self.costs.at[tech, "capital_cost"]
+                    )
+
+            elif tech == 'electrolysis':
+                self.network.add("Link", tech,
+                    bus0='electricity bus',
+                    bus1='hydrogen bus',
+                    carrier='electrolysis',
+                    p_nom_extendable=True,
+                    capital_cost=self.costs.at[tech, "capital_cost"],
+                    efficiency=self.costs.at[tech, "efficiency"]
+                    )
+
+            elif tech == 'fuel cell':
+                self.network.add("Link", tech,
+                    bus0='hydrogen bus',
+                    bus1='electricity bus',
+                    carrier='fuel cell',
+                    p_nom_extendable=True,
+                    capital_cost=self.costs.at[tech, "capital_cost"],
+                    efficiency=self.costs.at[tech, "efficiency"]
+                    )
+
+            elif tech == 'Hydrogen storage':
+                self.network.add("Store", tech,
+                    bus='hydrogen bus',
+                    e_nom_extendable=True,
+                    e_cyclic=False,
+                    capital_cost=self.costs.at["H2 (l) storage tank", "capital_cost"],
+                    carrier='hydrogen storage'
+                    )
+                
+            elif tech == 'Reservoir hydro storage':
+                self.network.add("StorageUnit", tech,
+                    bus='electricity bus',
+                    carrier='hydro',
+                    p_nom_extendable=False,
+                    p_nom = 12700,  # 12 GW
+                    max_hours=1300,
+                    efficiency_store=0,
+                    efficiency_dispatch=self.costs.at["Pumped-Storage-Hydro-bicharger", "efficiency"],
+                    cyclic_state_of_charge=False,
+                    state_of_charge_initial= (12700 * 1300)*0.3 ,  # Initial storage capacity in MWh
+                    inflow=self.data_dict[self.region]['hydro'].values.flatten(),
+                    marginal_cost=self.costs.at["onwind", "marginal_cost"]*1.2,  # higher than wind to prioritize wind usage
+                    capital_cost=0
+                    )
+
+    def extract_data(self, region: str, weather_year: int, hydro_year: int, demand_year: int):
+        extracted = {}
+        if demand_year not in self.all_data["demand"].index.year:
+            print(f"Demand year {demand_year} not in data. Using 2017 instead.")
+            demand_year = 2017
+        if weather_year not in self.all_data["solar"].index.year:
+            print(f"Weather year {weather_year} not in data. Using 2012 instead.")
+            weather_year = 2012
+        if hydro_year not in self.all_data["hydro_inflow"].index.year:
+            print(f"Hydro year {hydro_year} not in data. Using 2011 instead.")
+            hydro_year = 2011
+
+        if region in self.all_data["demand"].columns:
+            demand_series = self.all_data["demand"].loc[self.all_data["demand"].index.year == demand_year, region]
+            extracted["demand"] = demand_series[demand_series.index.strftime('%m-%d') != '02-29'][:8760]
+
+        for carrier in ["solar", "onwind", "offwind"]:
+            if region in self.all_data[carrier].columns:
+                weather_series = self.all_data[carrier].loc[self.all_data[carrier].index.year == weather_year, region]
+                extracted[carrier] = weather_series[weather_series.index.strftime('%m-%d') != '02-29'][:8760]
+
+        if region in self.all_data["hydro_inflow"].columns:
+            hydro_series = self.all_data["hydro_inflow"].loc[self.all_data["hydro_inflow"].index.year == hydro_year, region]
+            extracted["hydro"] = hydro_series[hydro_series.index.strftime('%m-%d') != '02-29'][:8760]
+
+        return extracted  
+
+
+
 class Build_network_capacity_exp_bat_S_unit:
     def __init__(
         self,
@@ -351,14 +579,14 @@ class Build_network_capacity_exp_bat_S_unit:
                     )
 
             elif tech == 'battery storage':
-                max_h = 6  # Max hours of storage
+                max_h = 4  # Max hours of storage
                 self.network.add("StorageUnit", "battery",
                     bus='electricity bus', carrier='battery',
                     p_nom_extendable=True, 
                     max_hours=max_h,
                     efficiency_store=self.costs.at["battery inverter", "efficiency"],
                     efficiency_dispatch=self.costs.at["battery inverter", "efficiency"],
-                    capital_cost=self.costs.at["battery inverter", "capital_cost"] + self.costs.at["battery storage", "capital_cost"],
+                    capital_cost=self.costs.at["battery inverter", "capital_cost"] + self.costs.at["battery storage", "capital_cost"] * max_h,
                     #capital_cost= max_h * self.costs.at["battery storage", "capital_cost"],
                     cyclic_state_of_charge=False
                     )   
@@ -404,6 +632,7 @@ class Build_network_capacity_exp_bat_S_unit:
                     cyclic_state_of_charge=False,
                     state_of_charge_initial= (12700 * 1300)*0.3 ,  # Initial storage capacity in MWh
                     inflow=self.data_dict[self.region]['hydro'].values.flatten(),
+                    marginal_cost=self.costs.at["onwind", "marginal_cost"]*1.2,  # higher than wind to prioritize wind usage
                     capital_cost=0
                     )
 
