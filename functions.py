@@ -118,6 +118,111 @@ def print_Results(N):
 
     return
 
+def extract_total_dispatch_profiles(network_pf, network_rh):    # Energy Dipatch pr carrier 
+    records = []
+
+    for model_label, network in zip(["Perfect Foresight", "Rolling Horizon"], [network_pf, network_rh]):
+        # Generators
+        for gen in network.generators.index:
+            total_dispatch = round(network.generators_t.p[gen].sum() / 1e3, 1)  # Convert MWh to GWh
+            records.append({
+                "Model": model_label,
+                "Component": gen,
+                "Carrier": network.generators.at[gen, "carrier"],
+                "Type": "generator",
+                "Total Dispatch [GWh]": total_dispatch
+            })
+
+        # Hydro StorageUnits
+        for hydro in network.storage_units.index:
+            if network.storage_units.at[hydro, "carrier"] == "hydro":
+                total_dispatch = round(network.storage_units_t.p_dispatch[hydro].sum() / 1e3, 1)  # Convert MWh to GWh
+                records.append({
+                    "Model": model_label,
+                    "Component": hydro,
+                    "Carrier": "hydro",
+                    "Type": "hydro storage dispatch",
+                    "Total Dispatch [GWh]": total_dispatch
+                })
+
+        # Battery Links: charge (p0), discharge (p1)
+        if {"battery charge", "battery discharge"}.issubset(network.links.index):
+            total_charge = round(network.links_t.p1["battery charge"].sum() / 1e3, 1)
+            total_discharge = round(network.links_t.p0["battery discharge"].sum() / 1e3, 1)
+
+            records.append({
+                "Model": model_label,
+                "Component": "battery charge",
+                "Carrier": "battery",
+                "Type": "charge",
+                "Total Dispatch [GWh]": total_charge
+            })
+            records.append({
+                "Model": model_label,
+                "Component": "battery discharge",
+                "Carrier": "battery",
+                "Type": "discharge",
+                "Total Dispatch [GWh]": total_discharge
+            })
+
+    dispatch_df = pd.DataFrame(records)
+    # Add total sum for each model
+    total_rows = []
+    for model in dispatch_df["Model"].unique():
+        total = dispatch_df[dispatch_df["Model"] == model]["Total Dispatch [GWh]"].sum()
+        total_rows.append({
+            "Model": model,
+            "Component": "Total",
+            "Carrier": "",
+            "Type": "",
+            "Total Dispatch [GWh]": round(total, 1)
+        })
+    dispatch_df = pd.concat([dispatch_df, pd.DataFrame(total_rows)], ignore_index=True)
+    return dispatch_df.sort_values(by=["Component", "Carrier"])
+
+def make_dispatch_diff_table(dispatch_df):         # Energi difference between PF and RH from above function
+    """
+    Create PF vs RH comparison from extract_total_dispatch_profiles output.
+    Keeps each Component separate; no premature rounding.
+    """
+    # Remove any total rows if present
+    df = dispatch_df[dispatch_df["Component"] != "Total"].copy()
+    df = dispatch_df[dispatch_df["Component"] != "Total"].copy()
+
+    # Pivot so PF and RH are side by side per Component
+    pivot = df.pivot_table(index=["Component", "Carrier", "Type"],
+                           columns="Model",
+                           values="Total Dispatch [GWh]",
+                           aggfunc="sum").reset_index()
+
+    # Ensure both PF and RH columns exist
+    if "Perfect Foresight" not in pivot.columns:
+        pivot["Perfect Foresight"] = 0.0
+    if "Rolling Horizon" not in pivot.columns:
+        pivot["Rolling Horizon"] = 0.0
+
+    # Rename
+    pivot = pivot.rename(columns={
+        "Perfect Foresight": "PF [GWh]",
+        "Rolling Horizon": "RH [GWh]"
+    })
+
+    # Differences
+    pivot["Diff [GWh]"] = pivot["RH [GWh]"] - pivot["PF [GWh]"]
+    pivot["Percentage Difference [%]"] = pivot.apply(
+        lambda r: 0.0 if r["PF [GWh]"] == 0 and r["RH [GWh]"] == 0
+        else float("inf") if r["PF [GWh]"] == 0
+        else 100 * (r["RH [GWh]"] - r["PF [GWh]"]) / r["PF [GWh]"],
+        axis=1
+    )
+
+    # Round for display
+    for col in ["PF [GWh]", "RH [GWh]", "Diff [GWh]"]:
+        pivot[col] = pivot[col].round(1)
+    pivot["Percentage Difference [%]"] = pivot["Percentage Difference [%]"].round(1)
+
+    return pivot.sort_values(["Component", "Carrier"]).reset_index(drop=True)
+
 
 
 " ____________________ SILENT OPTIMIZE ____________________ "
@@ -144,7 +249,7 @@ def silent_optimize(network, solver_name="gurobi", solver_options=None):
     # Redirect stdout to suppress Gurobi messages
     with open(os.devnull, 'w') as fnull:
         with redirect_stdout(fnull):
-            network.optimize(solver_name=solver_name, solver_options=solver_options)
+            network.optimize(solver_name=solver_name, assign_all_duals=True, solver_options=solver_options)
             #print("Objective value:", network.objective)
 
 
@@ -190,6 +295,126 @@ def plot_electricity_mix(network, save_plot=False, plot_title='Electricity mix',
         plt.savefig("Plots/electricity_mix.png", dpi=300, bbox_inches="tight")
     plt.show()
 
+def plot_dispatch(network, colors=None, save_plots=False, start_hour=0, duration_hours=7 * 24, title="Dispatch"):
+    import matplotlib.pyplot as plt
+
+    generators = network.generators.index
+    storage_units = network.storage_units
+
+    end_hour = start_hour + duration_hours
+
+    plt.figure(figsize=(10, 5))
+
+    # Plot generator dispatch
+    for generator in generators:
+        name = generator
+        if network.generators.p_nom_opt.get(generator, 0) > 10:
+            plt.plot(
+                network.generators_t.p[generator][start_hour:end_hour],
+                label=name,
+                color=colors.get(name, None) if colors else None
+            )
+
+    # Plot hydro dispatch
+    hydro_mask = (storage_units.carrier == "hydro") & (storage_units.bus == "electricity bus")
+    if hydro_mask.any():
+        for idx in storage_units[hydro_mask].index:
+            plt.plot(
+                network.storage_units_t.p_dispatch[idx][start_hour:end_hour],
+                label="hydro dispatch",
+                color=colors.get("hydro", "green") if colors else "green",
+                linestyle="--"
+            )
+
+    # Plot load
+    if "load" in network.loads.index:
+        plt.plot(
+            network.loads_t.p_set["load"][start_hour:end_hour],
+            label="load",
+            color="black",
+            linestyle=":"
+        )
+
+    # X-axis formatting
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+
+    # Labels and title
+    plt.title(f'Dispatch {title}', y=1.07)
+    plt.ylabel('Generation in MWh')
+    plt.grid(True, which='major', alpha=0.25)
+    plt.legend()
+    if save_plots:
+        plt.savefig(f'./Plots/dispatch_{start_hour}.png', dpi=300, bbox_inches='tight')
+    plt.show()
+
+def plot_dispatch_bat(network, colors=None, save_plots=False, start_hour=0, duration_hours=7 * 24, title="Dispatch"):
+    import matplotlib.pyplot as plt
+
+    generators = network.generators.index
+    storage_units = network.storage_units
+    links = network.links
+
+    end_hour = start_hour + duration_hours
+
+    plt.figure(figsize=(10, 5))
+
+    # Plot generator dispatch
+    for generator in generators:
+        if getattr(network.generators, "p_nom_opt", network.generators.p_nom).get(generator, 0) > 10:
+            plt.plot(
+                network.generators_t.p[generator][start_hour:end_hour],
+                label=generator,
+                color=colors.get(generator, None) if colors else None
+            )
+
+    # Plot hydro dispatch
+    hydro_mask = (storage_units.carrier == "hydro") & (storage_units.bus == "electricity bus")
+    if hydro_mask.any():
+        for idx in storage_units[hydro_mask].index:
+            plt.plot(
+                network.storage_units_t.p_dispatch[idx][start_hour:end_hour],
+                label="hydro dispatch",
+                color=colors.get("hydro", "green") if colors else "green",
+                linestyle="--"
+            )
+
+    # Plot battery links (charge/discharge)
+    if {"battery charge", "battery discharge"}.issubset(links.index):
+        plt.plot(
+            network.links_t.p0["battery charge"][start_hour:end_hour],
+            label="battery charge (p0)",
+            color=colors.get("battery charge", "blue") if colors else "blue",
+            linestyle=":"
+        )
+        plt.plot(
+            network.links_t.p1["battery discharge"][start_hour:end_hour],
+            label="battery discharge (p1)",
+            color=colors.get("battery discharge", "red") if colors else "red",
+            linestyle=":"
+        )
+
+    # Plot load
+    if "load" in network.loads.index:
+        plt.plot(
+            network.loads_t.p_set["load"][start_hour:end_hour],
+            label="load",
+            color="black",
+            linestyle=":"
+        )
+
+    # X-axis formatting
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+
+    # Labels and title
+    plt.title(f'Dispatch {title}', y=1.07)
+    plt.ylabel('Generation in MWh')
+    plt.grid(True, which='major', alpha=0.25)
+    plt.legend()
+    if save_plots:
+        plt.savefig(f'./Plots/dispatch_{start_hour}.png', dpi=300, bbox_inches='tight')
+    plt.show()
 
 def plot_generator_capacity(results_df, generator, type, region, d_year_exp, h_year_exp):
     """
@@ -230,55 +455,129 @@ def plot_generator_capacity(results_df, generator, type, region, d_year_exp, h_y
     plt.show()
 
 def plot_normalized_hydro(network_pf, network_rh, interval=None):
-    # Rolling Horizon
+    # years
+    year_pf = network_pf.snapshots[0].year
     year_rh = network_rh.snapshots[0].year
-    hydro_inflow_rh = All_data["hydro_inflow"][region]
-    hydro_inflow_rh = hydro_inflow_rh[hydro_inflow_rh.index.year == h_year_dispatch]
+
+    # inflow year to use (e.g. 2007)
+    inflow_src = All_data["hydro_inflow"][region]
+    inflow_year = inflow_src[inflow_src.index.year == h_year_dispatch].copy()
+
+    # remap inflow calendar year to the networks' years and align to snapshots
+    def align_inflow_to_network(inflow, net_year, snaps):
+        s = inflow.copy()
+        s.index = s.index.map(lambda t: t.replace(year=net_year))
+        # align to snapshots; allow small gaps
+        s = s.reindex(snaps).interpolate(limit_direction="both")
+        return s
+
+    hydro_inflow_pf = align_inflow_to_network(inflow_year, year_pf, network_pf.snapshots)
+    hydro_inflow_rh = align_inflow_to_network(inflow_year, year_rh, network_rh.snapshots)
+
+    # dispatch & SOC (already on snapshot index)
+    dispatch_pf = network_pf.storage_units_t.p["Reservoir hydro storage"]
+    soc_pf = network_pf.storage_units_t.state_of_charge["Reservoir hydro storage"]
     dispatch_rh = network_rh.storage_units_t.p["Reservoir hydro storage"]
     soc_rh = network_rh.storage_units_t.state_of_charge["Reservoir hydro storage"]
 
-    # Perfect Foresight
-    year_pf = network_pf.snapshots[0].year
-    hydro_inflow_pf = All_data["hydro_inflow"][region]
-    hydro_inflow_pf = hydro_inflow_pf[hydro_inflow_pf.index.year == h_year_dispatch]
-    dispatch_pf = network_pf.storage_units_t.p["Reservoir hydro storage"]
-    soc_pf = network_pf.storage_units_t.state_of_charge["Reservoir hydro storage"]
-
-    # Apply interval slicing if specified
+    # optional date interval
     if interval is not None:
         start, end = interval
-        hydro_inflow_rh = hydro_inflow_rh.loc[start:end]
-        dispatch_rh = dispatch_rh.loc[start:end]
-        soc_rh = soc_rh.loc[start:end]
-
         hydro_inflow_pf = hydro_inflow_pf.loc[start:end]
         dispatch_pf = dispatch_pf.loc[start:end]
         soc_pf = soc_pf.loc[start:end]
 
+        hydro_inflow_rh = hydro_inflow_rh.loc[start:end]
+        dispatch_rh = dispatch_rh.loc[start:end]
+        soc_rh = soc_rh.loc[start:end]
+
     fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
 
+    # RH
     axes[0].plot(dispatch_rh / dispatch_rh.max(), label="Hydro Dispatch", color='#6baed6')
     axes[0].plot(hydro_inflow_rh / hydro_inflow_rh.max(), label=f"Hydro Inflow {region} (year {h_year_dispatch})", color='tab:blue')
     axes[0].plot(soc_rh / (12700*1300), label="State of Charge", color='tab:green')
     axes[0].set_title(f"Normalized Hydro - Rolling Horizon - {region} {year_rh}")
-    axes[0].set_ylabel("Normalized")
-    axes[0].set_ylim(0, 1.1)
-    axes[0].grid(True)
-    axes[0].legend(loc='upper right')
+    axes[0].set_ylabel("Normalized"); axes[0].set_ylim(0, 1.1); axes[0].grid(True); axes[0].legend(loc='upper right')
 
+    # PF
     axes[1].plot(dispatch_pf / dispatch_pf.max(), label="Hydro Dispatch", color='#6baed6')
     axes[1].plot(hydro_inflow_pf / hydro_inflow_pf.max(), label=f"Hydro Inflow {region} (year {h_year_dispatch})", color='tab:blue')
     axes[1].plot(soc_pf / (12700*1300), label="State of Charge", color='tab:green')
     axes[1].set_title(f"Normalized Hydro - Perfect Foresight - {region} {year_pf}")
-    axes[1].set_xlabel("Date")
-    axes[1].set_ylabel("Normalized")
-    axes[1].set_ylim(0, 1.1)
-    axes[1].grid(True)
-    axes[1].legend(loc='upper right')
+    axes[1].set_xlabel("Date"); axes[1].set_ylabel("Normalized"); axes[1].set_ylim(0, 1.1); axes[1].grid(True); axes[1].legend(loc='upper right')
 
     plt.tight_layout()
     plt.show()
 
+def plot_extreme_period(networks_by_year,  # {year: Network}
+                                                 extreme_periods_by_year,  # {year: [objects with .period.left/.right]}
+                                                 region,
+                                                 bus_name="electricity bus",
+                                                 standard_year=2018,
+                                                 periods_per_year=1):
+    # 1) compute max price & time per year (dicts)
+    max_price = {}
+    max_time  = {}
+    for y, n in networks_by_year.items():
+        if bus_name not in n.buses_t.marginal_price.columns: 
+            continue
+        mp = n.buses_t.marginal_price[bus_name]
+        if mp.empty: 
+            continue
+        idx = mp.values.argmax()
+        max_price[y] = float(mp.iloc[idx])
+        t = mp.index[idx]
+        try:
+            max_time[y] = t.replace(year=standard_year)
+        except ValueError:
+            # Feb 29 guard
+            max_time[y] = t.replace(year=standard_year, day=28)
+
+    # 2) build plot data
+    lines, dots = [], []
+    for y in sorted(extreme_periods_by_year.keys()):
+        periods = extreme_periods_by_year.get(y, [])
+        if not periods or y not in max_price:   # skip years without a period
+            continue
+
+        # dot at yearly max
+        dots.append((max_time[y], max_price[y]))
+
+        # lines for the year's periods at that y-level
+        for p in periods[:periods_per_year]:
+            pobj = getattr(p, "period", p)
+            s, e = pobj.left, pobj.right
+            try:
+                s = s.replace(year=standard_year)
+                e = e.replace(year=standard_year)
+            except ValueError:
+                if s.month == 2 and s.day == 29: s = s.replace(year=standard_year, day=28)
+                if e.month == 2 and e.day == 29: e = e.replace(year=standard_year, day=28)
+            lines.append((s, e, max_price[y]))
+
+    # 3) plot
+    plt.figure(figsize=(12, 6))
+    first = True
+    for s, e, price in lines:
+        plt.plot([s, e], [price, price], color='grey', linewidth=2,
+                 label='Extreme Periods' if first else "")
+        first = False
+
+    first = True
+    for t, price in dots:
+        plt.scatter(t, price, color='red', zorder=5,
+                    label='Max Marginal Prices' if first else "")
+        first = False
+
+    plt.title(f"Extreme Periods and Max Marginal Prices ({region}) weather years 1979–2017")
+    plt.xlabel(f"Time of Year (standardized to {standard_year})")
+    plt.ylabel("Marginal Price (EUR/MWh)")
+    plt.grid(True, alpha=0.3)
+    if lines or dots:
+        plt.legend(loc='upper right')
+    plt.tight_layout()
+    plt.show()
 
 " ____________________ Unique prices ____________________ "
 def unique_prices(network):
