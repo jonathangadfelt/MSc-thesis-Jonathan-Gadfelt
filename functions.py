@@ -510,6 +510,108 @@ def plot_normalized_hydro(network_pf, network_rh, interval=None):
     plt.tight_layout()
     plt.show()
 
+import matplotlib.dates as mdates
+
+def plot_hydro(network_pf, network_rh, interval=None, normalized=True, show_inflow=True, show_dispatch=True, show_soc=True, same_axes=False):
+    # years
+    year_pf = network_pf.snapshots[0].year
+    year_rh = network_rh.snapshots[0].year
+
+    # inflow source year -> remap to network years and align to snapshots
+    inflow_src = All_data["hydro_inflow"][region]
+    inflow_year = inflow_src[inflow_src.index.year == h_year_dispatch].copy()
+
+    def align_inflow_to_network(inflow, net_year, snaps):
+        s = inflow.copy()
+        s.index = s.index.map(lambda t: t.replace(year=net_year))
+        return s.reindex(snaps).interpolate(limit_direction="both")
+
+    inflow_pf = network_pf.storage_units_t.inflow["Reservoir hydro storage"]
+    inflow_rh = network_rh.storage_units_t.inflow["Reservoir hydro storage"]
+
+    # dispatch & SOC
+    disp_pf = network_pf.storage_units_t.p["Reservoir hydro storage"]
+    soc_pf  = network_pf.storage_units_t.state_of_charge["Reservoir hydro storage"]
+    disp_rh = network_rh.storage_units_t.p["Reservoir hydro storage"]
+    soc_rh  = network_rh.storage_units_t.state_of_charge["Reservoir hydro storage"]
+
+    # optional interval (use datetime strings or Timestamps)
+    if interval is not None:
+        start, end = interval
+        inflow_pf = inflow_pf.loc[start:end];    disp_pf = disp_pf.loc[start:end];    soc_pf = soc_pf.loc[start:end]
+        inflow_rh = inflow_rh.loc[start:end];    disp_rh = disp_rh.loc[start:end];    soc_rh = soc_rh.loc[start:end]
+
+    # normalization helpers
+    def safe_norm(s):
+        m = float(s.max()) if len(s) else 0.0
+        return s / m if m > 0 else s*0.0
+
+    def soc_norm(s):
+        denom = 12700 * 1300
+        return s / denom if denom else s
+
+    # choose data as normalized or raw
+    disp_pf_plot = safe_norm(disp_pf) if normalized else disp_pf
+    disp_rh_plot = safe_norm(disp_rh) if normalized else disp_rh
+    inflow_pf_plot = safe_norm(inflow_pf) if normalized else inflow_pf
+    inflow_rh_plot = safe_norm(inflow_rh) if normalized else inflow_rh
+    soc_pf_plot  = soc_norm(soc_pf) if normalized else soc_pf
+    soc_rh_plot  = soc_norm(soc_rh) if normalized else soc_rh
+
+    # plotting
+    if same_axes:
+        fig, ax = plt.subplots(figsize=(14, 5))
+
+        if show_dispatch:
+            ax.plot(disp_pf_plot, label="Hydro Dispatch PF", color='#6baed6', linestyle='-')
+            ax.plot(disp_rh_plot, label="Hydro Dispatch RH", color='#6baed6', linestyle='--')
+        if show_inflow:
+            ax.plot(inflow_pf_plot, label=f"Inflow PF (yr {h_year_dispatch})", color='tab:blue', linestyle='-')
+            ax.plot(inflow_rh_plot, label=f"Inflow RH (yr {h_year_dispatch})", color='tab:blue', linestyle='--')
+        if show_soc:
+            ax.plot(soc_pf_plot, label="SOC PF", color='tab:green', linestyle='-')
+            ax.plot(soc_rh_plot, label="SOC RH", color='tab:green', linestyle='--')
+
+        ax.set_title(f"{'Normalized ' if normalized else ''}Hydro - PF vs RH - {region} ({year_pf} / {year_rh})")
+        ax.set_ylabel("Normalized" if normalized else "MWh")
+        ax.set_xlabel("Date")
+        if normalized:
+            ax.set_ylim(0, 1.1)
+        ax.grid(True)
+        ax.legend(loc='upper right')
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(mdates.AutoDateLocator()))
+        plt.xticks(rotation=30)
+        plt.tight_layout()
+        return fig, ax
+
+    else:
+        fig, axes = plt.subplots(2, 1, figsize=(14, 9), sharex=True)
+
+        # RH (top)
+        if show_dispatch: axes[0].plot(disp_rh_plot, label="Hydro Dispatch RH", color='#6baed6')
+        if show_inflow:   axes[0].plot(inflow_rh_plot, label=f"Hydro Inflow RH (yr {h_year_dispatch})", color='tab:blue')
+        if show_soc:      axes[0].plot(soc_rh_plot, label="State of Charge RH", color='tab:green')
+        axes[0].set_title(f"{'Normalized ' if normalized else ''}Hydro - Rolling Horizon - {region} {year_rh}")
+        axes[0].set_ylabel("Normalized" if normalized else "MWh")
+        if normalized: axes[0].set_ylim(0, 1.1)
+        axes[0].grid(True); axes[0].legend(loc='upper right')
+
+        # PF (bottom)
+        if show_dispatch: axes[1].plot(disp_pf_plot, label="Hydro Dispatch PF", color='#6baed6')
+        if show_inflow:   axes[1].plot(inflow_pf_plot, label=f"Hydro Inflow PF (yr {h_year_dispatch})", color='tab:blue')
+        if show_soc:      axes[1].plot(soc_pf_plot, label="State of Charge PF", color='tab:green')
+        axes[1].set_title(f"{'Normalized ' if normalized else ''}Hydro - Perfect Foresight - {region} {year_pf}")
+        axes[1].set_xlabel("Date"); axes[1].set_ylabel("Normalized" if normalized else "MWh")
+        if normalized: axes[1].set_ylim(0, 1.1)
+        axes[1].grid(True); axes[1].legend(loc='upper right')
+
+        axes[1].xaxis.set_major_locator(mdates.AutoDateLocator())
+        axes[1].xaxis.set_major_formatter(mdates.ConciseDateFormatter(mdates.AutoDateLocator()))
+        plt.xticks(rotation=30)
+        plt.tight_layout()
+        return fig, axes
+
 def plot_extreme_period(networks_by_year,  # {year: Network}
                                                  extreme_periods_by_year,  # {year: [objects with .period.left/.right]}
                                                  region,

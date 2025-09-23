@@ -996,7 +996,7 @@ class Build_dispatch_network_hMC:
                     cyclic_state_of_charge=False,
                     inflow=self.data_dict[self.region]['hydro'].values.flatten(),
                     state_of_charge_initial= (12700 * 1300)*0.3 ,  # Initial storage capacity in MWh
-                    marginal_cost=self.costs.at["OCGT", "marginal_cost"]*0.80,  # higher than wind to prioritize wind usage
+                    marginal_cost=self.costs.at["OCGT", "marginal_cost"]*0.80,  
                     spill_cost = 3000,
                     capital_cost=0)
     
