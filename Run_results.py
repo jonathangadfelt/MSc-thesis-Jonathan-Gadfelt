@@ -28,9 +28,9 @@ setup_dispatch = {
         'onwind': True,
         'offwind': False,
         'solar': True,
-        'electrolysis': True,
-        'fuel cell': True,
-        'Hydrogen storage': True,
+        'electrolysis': False,
+        'fuel cell': False,
+        'Hydrogen storage': False,
         'Reservoir hydro storage': True,
         'load shedding': True
     }
@@ -152,51 +152,98 @@ from types import MethodType
 
 logger = logging.getLogger(__name__)
 
-def optimize_with_rolling_horizon_collect(
-    self,
-    snapshots: Sequence | None = None,
-    horizon: int = 100,
-    overlap: int = 0,
-    **kwargs: Any,
-) -> Network:
-    """Like PyPSA's optimize_with_rolling_horizon, but collects objectives per run."""
-    n = self.n
+" Virkede i første omgang men uden at save obj"
+# def optimize_with_rolling_horizon_collect(
+#     self,
+#     snapshots: Sequence | None = None,
+#     horizon: int = 100,
+#     overlap: int = 0,
+#     **kwargs: Any,
+# ) -> Network:
+#     """Like PyPSA's optimize_with_rolling_horizon, but collects objectives per run."""
+#     n = self.n
+#     if snapshots is None:
+#         snapshots = n.snapshots
+#     if horizon <= overlap:
+#         raise ValueError("overlap must be smaller than horizon")
+
+#     starting_points = range(0, len(snapshots), horizon - overlap)
+#     objs, runs = [], []
+
+#     for i, start in enumerate(starting_points):
+#         end = min(len(snapshots), start + horizon)
+#         sns = snapshots[start:end]
+#         logger.info(
+#             "Optimizing network for snapshot horizon [%s:%s] (%s/%s).",
+#             sns[0], sns[-1], i + 1, len(starting_points),
+#         )
+
+#         if i:
+#             if not n.c.stores.static.empty:
+#                 n.c.stores.static.e_initial = n.c.stores.dynamic.e.loc[snapshots[start - 1]]
+#             if not n.c.storage_units.static.empty:
+#                 n.c.storage_units.static.state_of_charge_initial = (
+#                     n.c.storage_units.dynamic.state_of_charge.loc[snapshots[start - 1]]
+#                 )
+
+#         status, condition = n.optimize(sns, **kwargs)
+#         if status != "ok":
+#             logger.warning("Optimization failed with status %s and condition %s", status, condition)
+#         else:
+#             # collect objective and run meta
+#             if hasattr(n, "objective"):
+#                 objs.append(n.objective)
+#                 runs.append({"run": i + 1, "start": sns[0], "end": sns[-1]})
+
+#     # attach results to the network for later access
+#     n.rolling_objectives = objs
+#     n.rolling_runs = runs
+#     return n
+
+def optimize_with_rolling_horizon_collect(self, snapshots=None, horizon=100, overlap=0, **kwargs):
+    """
+    Custom rolling horizon optimization that also collects objectives
+    and stores them in n.attrs.
+    """
+    n = self.n   # <- works for your PyPSA version
+
     if snapshots is None:
         snapshots = n.snapshots
+
     if horizon <= overlap:
         raise ValueError("overlap must be smaller than horizon")
 
-    starting_points = range(0, len(snapshots), horizon - overlap)
     objs, runs = [], []
 
-    for i, start in enumerate(starting_points):
-        end = min(len(snapshots), start + horizon)
+    for i in range(0, len(snapshots), horizon - overlap):
+        start = i
+        end = min(len(snapshots), i + horizon)
         sns = snapshots[start:end]
-        logger.info(
-            "Optimizing network for snapshot horizon [%s:%s] (%s/%s).",
-            sns[0], sns[-1], i + 1, len(starting_points),
-        )
 
         if i:
-            if not n.c.stores.static.empty:
-                n.c.stores.static.e_initial = n.c.stores.dynamic.e.loc[snapshots[start - 1]]
-            if not n.c.storage_units.static.empty:
-                n.c.storage_units.static.state_of_charge_initial = (
-                    n.c.storage_units.dynamic.state_of_charge.loc[snapshots[start - 1]]
+            if not n.stores.empty:
+                n.stores.e_initial = n.stores_t.e.loc[snapshots[start - 1]]
+            if not n.storage_units.empty:
+                n.storage_units.state_of_charge_initial = (
+                    n.storage_units_t.state_of_charge.loc[snapshots[start - 1]]
                 )
 
         status, condition = n.optimize(sns, **kwargs)
-        if status != "ok":
-            logger.warning("Optimization failed with status %s and condition %s", status, condition)
-        else:
-            # collect objective and run meta
-            if hasattr(n, "objective"):
-                objs.append(n.objective)
-                runs.append({"run": i + 1, "start": sns[0], "end": sns[-1]})
 
-    # attach results to the network for later access
-    n._rolling_objectives = objs
-    n._rolling_runs = runs
+        if status != "ok":
+            logger.warning(
+                "Optimization failed with status %s and condition %s",
+                status, condition
+            )
+
+        if hasattr(n, "objective"):
+            objs.append(n.objective)
+            runs.append({"run": i + 1, "start": sns[0], "end": sns[-1]})
+
+    # Save to attrs so it survives export_to_netcdf
+    n.generators.attrs["rolling_objectives"] = objs
+    n.generators.attrs["rolling_runs"] = runs
+
     return n
 
 
@@ -218,148 +265,158 @@ def optimize_with_rolling_horizon_collect(
 #%%        RUN ROLLING HORIZON
 " Running for all weather years "
 
-# d_horizon = 7 
-# h_overlap = 0  
+d_horizon = 7 
+h_overlap = 0  
 
-# save_networks_RH = True  
+save_networks_RH = True  
 
-# if save_networks_RH:
-#     # create subfolders for PF and RH
-#     pf_folder = f"N_PF_d_{d_year_dispatch}_h_{h_year_dispatch}{Test_name}"
-#     rh_folder = f"N_RH_d_{d_year_dispatch}_h_{h_year_dispatch}{Test_name}"
+if save_networks_RH:
+    # create subfolders for PF and RH
+    pf_folder = f"N_PF_d_{d_year_dispatch}_h_{h_year_dispatch}{Test_name}"
+    rh_folder = f"N_RH_d_{d_year_dispatch}_h_{h_year_dispatch}{Test_name}"
 
-#     pf_path = os.path.join(N_results_path, pf_folder)
-#     rh_path = os.path.join(N_results_path, rh_folder)
-#     os.makedirs(pf_path, exist_ok=True)
-#     os.makedirs(rh_path, exist_ok=True)
-
-#     for year in weather_years:
-#         # PF
-#         N_dispatch_class = Build_dispatch_network_hMC(
-#             opt_capacities_df=opt_capacities_df.loc["75%"], 
-#             weather_year=year, 
-#             hydro_year=h_year_dispatch, 
-#             demand_year=d_year_dispatch,
-#             data=All_data, cost_data=Cost, setup=setup_dispatch
-#         )
-#         N_dispatch = N_dispatch_class.network
-#         silent_optimize(N_dispatch)
-
-#         # RH
-#         N_rlh_class = Build_dispatch_network_hMC(
-#             opt_capacities_df=opt_capacities_df.loc["75%"],
-#             weather_year=year, 
-#             hydro_year=h_year_dispatch, 
-#             demand_year=d_year_dispatch,
-#             data=All_data, cost_data=Cost, setup=setup_dispatch
-#         )
-#         N_rlh = N_rlh_class.network
+    pf_path = os.path.join(N_results_path, pf_folder)
+    rh_path = os.path.join(N_results_path, rh_folder)
+    os.makedirs(pf_path, exist_ok=True)
+    os.makedirs(rh_path, exist_ok=True)
 
 
-#         # --- monkey-patch onto your network instance ---
-#         # net_rh = ...  # your network
-#         N_rlh.optimize.optimize_with_rolling_horizon = MethodType(
-#             optimize_with_rolling_horizon_collect, N_rlh.optimize
-#         )
+    df = pd.DataFrame(index=weather_years, columns=["total objective"])
+    
 
-#         N_rlh.optimize.optimize_with_rolling_horizon(
-#             snapshots=N_rlh.snapshots,
-#             horizon=(24 * d_horizon),
-#             overlap=h_overlap,
-#             solver_name="gurobi",
-#             solver_options={"OutputFlag": 0}
-#         )
+    for year in weather_years:
+        # PF
+        N_dispatch_class = Build_dispatch_network_hMC(
+            opt_capacities_df=opt_capacities_df.loc["75%"], 
+            weather_year=year, 
+            hydro_year=h_year_dispatch, 
+            demand_year=d_year_dispatch,
+            data=All_data, cost_data=Cost, setup=setup_dispatch
+        )
+        N_dispatch = N_dispatch_class.network
+        silent_optimize(N_dispatch)
 
-#         # filenames
-#         network_name_pf = f"N_PF_w-{year}_d-{d_year_dispatch}_h-{h_year_dispatch}_{region}{Test_name}.nc"
-#         network_name_rlh = f"N_RH_w-{year}_d-{d_year_dispatch}_h-{h_year_dispatch}_{region}{Test_name}.nc"
+        # RH
+        N_rlh_class = Build_dispatch_network_hMC(
+            opt_capacities_df=opt_capacities_df.loc["75%"],
+            weather_year=year, 
+            hydro_year=h_year_dispatch, 
+            demand_year=d_year_dispatch,
+            data=All_data, cost_data=Cost, setup=setup_dispatch
+        )
+        N_rlh = N_rlh_class.network
 
-#         # save to their respective folders
-#         N_dispatch.export_to_netcdf(os.path.join(pf_path, network_name_pf))
-#         N_rlh.export_to_netcdf(os.path.join(rh_path, network_name_rlh))
 
-#         print(f"Saved PF network for {year} as {network_name_pf} in {pf_folder}")
-#         print(f"Saved RH network for {year} as {network_name_rlh} in {rh_folder}")
+        # --- monkey-patch onto your network instance ---
+        # net_rh = ...  # your network
+        N_rlh.optimize.optimize_with_rolling_horizon = MethodType(
+            optimize_with_rolling_horizon_collect, N_rlh.optimize
+        )
+
+        N_rlh.optimize.optimize_with_rolling_horizon(
+            snapshots=N_rlh.snapshots,
+            horizon=(24 * d_horizon),
+            overlap=h_overlap,
+            solver_name="gurobi",
+            solver_options={"OutputFlag": 0}
+        )
+
+        df.loc[year, "total objective"] = sum(N_rlh.generators.attrs["rolling_objectives"])
+
+        # filenames
+        network_name_pf = f"N_PF_w-{year}_d-{d_year_dispatch}_h-{h_year_dispatch}_{region}{Test_name}.nc"
+        network_name_rlh = f"N_RH_w-{year}_d-{d_year_dispatch}_h-{h_year_dispatch}_{region}{Test_name}.nc"
+
+        # save to their respective folders
+        N_dispatch.export_to_netcdf(os.path.join(pf_path, network_name_pf))
+        N_rlh.export_to_netcdf(os.path.join(rh_path, network_name_rlh))
+
+        print(f"Saved PF network for {year} as {network_name_pf} in {pf_folder}")
+        print(f"Saved RH network for {year} as {network_name_rlh} in {rh_folder}")
+    df.to_csv(f"rolling_objectives_{network_name_rlh}.csv")
 
 # --- imports you need ---
 
 
 " Running just for one year for testing purposes "
 #%%        TEST PERFECT AND ROLLING HORIZON FOR ONE YEAR
+one_rh_pf_test = False
 test_year = 1995
+if one_rh_pf_test:
+    N_dispatch_class = Build_dispatch_network_hMC(
+        opt_capacities_df=opt_capacities_df.loc["75%"], # HUSK AT SØRG FOR OPT CAPACITIES ER LOADED FØRST 
+        weather_year=test_year, hydro_year=h_year_dispatch, demand_year=d_year_dispatch,
+        data=All_data, cost_data=Cost, setup=setup_dispatch)
 
-N_dispatch_class = Build_dispatch_network_hMC(
-    opt_capacities_df=opt_capacities_df.loc["75%"], # HUSK AT SØRG FOR OPT CAPACITIES ER LOADED FØRST 
-    weather_year=test_year, hydro_year=h_year_dispatch, demand_year=d_year_dispatch,
-    data=All_data, cost_data=Cost, setup=setup_dispatch)
+    N_dispatch = N_dispatch_class.network
+    silent_optimize(N_dispatch)
 
-N_dispatch = N_dispatch_class.network
-silent_optimize(N_dispatch)
-
-N_rlh_class = Build_dispatch_network_hMC(
-    opt_capacities_df=opt_capacities_df.loc["75%"],
-    weather_year=test_year, 
-    hydro_year=h_year_dispatch, 
-    demand_year=d_year_dispatch,
-    data=All_data, cost_data=Cost, setup=setup_dispatch)
-N_rlh = N_rlh_class.network
-
-
-# --- monkey-patch onto your network instance ---
-# net_rh = ...  # your network
-N_rlh.optimize.optimize_with_rolling_horizon = MethodType(
-    optimize_with_rolling_horizon_collect, N_rlh.optimize
-)
-
-objectives = []
-run_counter = {"i": 0}   # mutable container to keep state across calls
-
-def collect_objective(n, snapshots):
-    run_counter["i"] += 1
-    print(f"Rolling horizon run {run_counter['i']} with snapshots {snapshots[0]} → {snapshots[-1]}")
-    objectives.append(n.objective)
-
-# N_rlh.optimize.optimize_with_rolling_horizon_selfmade(
-#     snapshots=N_rlh.snapshots,
-#     horizon=24*d_horizon,
-#     overlap=h_overlap,
-#     solver_name="gurobi",
-#     solver_options={"OutputFlag": 0}
-#     #extra_functionality=collect_objective
-# )
+    N_rlh_class = Build_dispatch_network_hMC(
+        opt_capacities_df=opt_capacities_df.loc["75%"],
+        weather_year=test_year, 
+        hydro_year=h_year_dispatch, 
+        demand_year=d_year_dispatch,
+        data=All_data, cost_data=Cost, setup=setup_dispatch)
+    N_rlh = N_rlh_class.network
 
 
-# --- call exactly like before ---
-N_rlh.optimize.optimize_with_rolling_horizon(
-    snapshots=N_rlh.snapshots,
-    horizon=24*7,
-    overlap=0,
-    solver_name="gurobi",
-    solver_options={"OutputFlag": 0},
-    assign_all_duals=True
-)
+    # --- monkey-patch onto your network instance ---
+    # net_rh = ...  # your network
+    N_rlh.optimize.optimize_with_rolling_horizon = MethodType(
+        optimize_with_rolling_horizon_collect, N_rlh.optimize
+    )
+
+    objectives = []
+    run_counter = {"i": 0}   # mutable container to keep state across calls
+
+    # def collect_objective(n, snapshots):
+    #     run_counter["i"] += 1
+    #     print(f"Rolling horizon run {run_counter['i']} with snapshots {snapshots[0]} → {snapshots[-1]}")
+    #     objectives.append(n.objective)
+
+    # N_rlh.optimize.optimize_with_rolling_horizon_selfmade(
+    #     snapshots=N_rlh.snapshots,
+    #     horizon=24*d_horizon,
+    #     overlap=h_overlap,
+    #     solver_name="gurobi",
+    #     solver_options={"OutputFlag": 0}
+    #     #extra_functionality=collect_objective
+    # )
+
+
+    # --- call exactly like before ---
+    N_rlh.optimize.optimize_with_rolling_horizon(
+        snapshots=N_rlh.snapshots,
+        horizon=24*7,
+        overlap=0,
+        solver_name="gurobi",
+        solver_options={"OutputFlag": 0},
+        assign_all_duals=True
+    )
+
 
 
 #%%        COMPARE RESULTS
 # Get marginal prices for N_dispatch and N_rlh (rolling horizon)
 
-MC_N_pf = N_dispatch.buses_t['marginal_price'].iloc[:, 0]
-MC_N_rlh = N_rlh.buses_t['marginal_price'].iloc[:, 0]
-tot_cost_Np = (MC_N_pf * N_dispatch.loads_t.p_set['load']).sum() / 1e6
-tot_cost_Nr = (MC_N_rlh * N_rlh.loads_t.p_set["load"]).sum() / 1e6
-print(f"Hydro year {h_year_dispatch}, demand year {d_year_dispatch} and weather year {test_year}:")
-print("Total cost (N_perfect) [MEUR]:", round(tot_cost_Np, 2))
-print("Total cost (N_rolling) [MEUR]:", round(tot_cost_Nr, 2))
+if one_rh_pf_test:
+    MC_N_pf = N_dispatch.buses_t['marginal_price'].iloc[:, 0]
+    MC_N_rlh = N_rlh.buses_t['marginal_price'].iloc[:, 0]
+    tot_cost_Np = (MC_N_pf * N_dispatch.loads_t.p_set['load']).sum() / 1e6
+    tot_cost_Nr = (MC_N_rlh * N_rlh.loads_t.p_set["load"]).sum() / 1e6
+    print(f"Hydro year {h_year_dispatch}, demand year {d_year_dispatch} and weather year {test_year}:")
+    print("Total cost (N_perfect) [MEUR]:", round(tot_cost_Np, 2))
+    print("Total cost (N_rolling) [MEUR]:", round(tot_cost_Nr, 2))
 
-total_difference = tot_cost_Nr - tot_cost_Np
-print("Total cost difference RH minus PF [MEUR]:", round(total_difference, 2))
-print("spill RH:", N_rlh.storage_units_t.spill["Reservoir hydro storage"].sum()
-      , "spill PF:", N_dispatch.storage_units_t.spill["Reservoir hydro storage"].sum())
+    total_difference = tot_cost_Nr - tot_cost_Np
+    print("Total cost difference RH minus PF [MEUR]:", round(total_difference, 2))
+    print("spill RH:", N_rlh.storage_units_t.spill["Reservoir hydro storage"].sum()
+        , "spill PF:", N_dispatch.storage_units_t.spill["Reservoir hydro storage"].sum())
 
-#total_objective_rh = sum(objectives_rh)
-#print("Rolling horizon total objective:", total_objective_rh)
-print("Perfect foresight objective:", N_dispatch.objective)
-print("Total objective n_rlh:", sum(getattr(N_rlh, "_rolling_objectives", [])))
-print("Differences in obj N_rlh - N_pf:", sum(getattr(N_rlh, "_rolling_objectives", [])) - N_dispatch.objective)
-print("accessing rh obj using _rolling_objectives: ", sum(N_rlh._rolling_objectives))
+    #total_objective_rh = sum(objectives_rh)
+    #print("Rolling horizon total objective:", total_objective_rh)
+    print("Perfect foresight objective:", N_dispatch.objective)
+    print("Total objective n_rlh:", sum(getattr(N_rlh, "rolling_objectives", [])))
+    print("Differences in obj N_rlh - N_pf:", sum(getattr(N_rlh, "rolling_objectives", [])) - N_dispatch.objective)
+    print("accessing rh obj using rolling_objectives: ", sum(N_rlh.rolling_objectives))
 
