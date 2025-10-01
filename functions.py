@@ -10,6 +10,8 @@ import tqdm
 from pathlib import Path
 np.set_printoptions(suppress=True)
 
+region = "ESP"          # Region for hydro inflow data
+
 
 "  ____________________ LOAD ALL DATA ____________________ "
 
@@ -102,6 +104,53 @@ class CostGeneration:
 
 All_data = load_all_data()
 Cost = CostGeneration(year=2025)
+
+" ____________________ OBJECTIVES ROLLING HORIZON ____________________ "
+def optimize_with_rolling_horizon_collect(self, snapshots=None, horizon=100, overlap=0, **kwargs):
+    """
+    Custom rolling horizon optimization that also collects objectives
+    and stores them in n.attrs.
+    """
+    n = self.n   # <- works for your PyPSA version
+
+    if snapshots is None:
+        snapshots = n.snapshots
+
+    if horizon <= overlap:
+        raise ValueError("overlap must be smaller than horizon")
+
+    objs, runs = [], []
+
+    for i in range(0, len(snapshots), horizon - overlap):
+        start = i
+        end = min(len(snapshots), i + horizon)
+        sns = snapshots[start:end]
+
+        if i:
+            if not n.stores.empty:
+                n.stores.e_initial = n.stores_t.e.loc[snapshots[start - 1]]
+            if not n.storage_units.empty:
+                n.storage_units.state_of_charge_initial = (
+                    n.storage_units_t.state_of_charge.loc[snapshots[start - 1]]
+                )
+
+        status, condition = n.optimize(sns, **kwargs)
+
+        if status != "ok":
+            logger.warning(
+                "Optimization failed with status %s and condition %s",
+                status, condition
+            )
+
+        if hasattr(n, "objective"):
+            objs.append(n.objective)
+            runs.append({"run": i + 1, "start": sns[0], "end": sns[-1]})
+
+    # Save to attrs so it survives export_to_netcdf
+    n.generators.attrs["rolling_objectives"] = objs
+    n.generators.attrs["rolling_runs"] = runs
+
+    return n
 
 " ____________________ PRINT RESULTS FUNCTION ____________________ "
 
@@ -680,6 +729,47 @@ def plot_extreme_period(networks_by_year,  # {year: Network}
         plt.legend(loc='upper right')
     plt.tight_layout()
     plt.show()
+
+def plot_marginal_prices(network_pf, network_rh, month=None, interval=None):
+    # Extract marginal prices (first bus column)
+    mc_pf = network_pf.buses_t['marginal_price'].iloc[:, 0]
+    mc_rh = network_rh.buses_t['marginal_price'].iloc[:, 0]
+
+    # Apply month filter
+    if month is not None:
+        mc_pf = mc_pf[mc_pf.index.month == month]
+        mc_rh = mc_rh[mc_rh.index.month == month]
+
+    # Apply interval filter
+    if interval is not None:
+        start, end = interval
+        mc_pf = mc_pf.loc[start:end]
+        mc_rh = mc_rh.loc[start:end]
+
+    # Plot
+    plt.figure(figsize=(12, 5))
+    plt.plot(mc_pf, label="Marginal prices PF", linestyle="--")
+    plt.plot(mc_rh, label="Marginal prices RH", linestyle=":")
+    plt.xlabel("Time")
+    plt.ylabel("Marginal Price [EUR/MWh]")
+    plt.title("Marginal Prices Comparison PF vs RH")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+    # Cost calculations
+    cost_pf = (network_pf.buses_t['marginal_price'].iloc[:, 0] * 
+               network_pf.loads_t.p_set['load']).sum() / 1e6
+    cost_rh = (network_rh.buses_t['marginal_price'].iloc[:, 0] * 
+               network_rh.loads_t.p_set['load']).sum() / 1e6
+
+    print(f"Sum of marginal prices (PF): {mc_pf.sum():.1f}")
+    print(f"Sum of marginal prices (RH): {mc_rh.sum():.1f}")
+    print(f"Total cost (PF) [MEUR]: {cost_pf:.2f}")
+    print(f"Total cost (RH) [MEUR]: {cost_rh:.2f}")
+    print(f"Total cost difference PF minus RH [MEUR]: {cost_pf - cost_rh:.2f}")
+
 
 " ____________________ Unique prices ____________________ "
 def unique_prices(network):
