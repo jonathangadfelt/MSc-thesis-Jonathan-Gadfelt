@@ -8,6 +8,13 @@ import logging
 from contextlib import redirect_stdout
 import tqdm
 from pathlib import Path
+from typing import Sequence, Any
+from pypsa import Network
+import logging
+from types import MethodType
+logger = logging.getLogger(__name__)
+
+
 np.set_printoptions(suppress=True)
 
 region = "ESP"          # Region for hydro inflow data
@@ -105,7 +112,7 @@ class CostGeneration:
 All_data = load_all_data()
 Cost = CostGeneration(year=2025)
 
-" ____________________ OBJECTIVES ROLLING HORIZON ____________________ "
+" ____________________ ROLLING HORIZON ____________________ "
 def optimize_with_rolling_horizon_collect(self, snapshots=None, horizon=100, overlap=0, **kwargs):
     """
     Custom rolling horizon optimization that also collects objectives
@@ -151,6 +158,42 @@ def optimize_with_rolling_horizon_collect(self, snapshots=None, horizon=100, ove
     n.generators.attrs["rolling_runs"] = runs
 
     return n
+
+def rh_pf_test_yearly(test_year):    
+    N_dispatch_class = Build_dispatch_network_hMC(
+        opt_capacities_df=opt_capacities_df.loc["75%"], # HUSK AT SØRG FOR OPT CAPACITIES ER LOADED FØRST 
+        weather_year=test_year, hydro_year=h_year_dispatch, demand_year=d_year_dispatch,
+        data=All_data, cost_data=Cost, setup=setup_dispatch)
+
+    N_dispatch = N_dispatch_class.network
+    silent_optimize(N_dispatch)
+
+    N_rlh_class = Build_dispatch_network_hMC(
+        opt_capacities_df=opt_capacities_df.loc["75%"],
+        weather_year=test_year, 
+        hydro_year=h_year_dispatch, 
+        demand_year=d_year_dispatch,
+        data=All_data, cost_data=Cost, setup=setup_dispatch)
+    N_rlh = N_rlh_class.network
+
+
+    # --- monkey-patch onto your network instance ---
+    # net_rh = ...  # your network
+    N_rlh.optimize.optimize_with_rolling_horizon = MethodType(
+        optimize_with_rolling_horizon_collect, N_rlh.optimize
+    )
+
+
+    N_rlh.optimize.optimize_with_rolling_horizon(
+        snapshots=N_rlh.snapshots,
+        horizon=24*7,
+        overlap=0,
+        solver_name="gurobi",
+        solver_options={"OutputFlag": 0},
+        assign_all_duals=True
+    )
+
+    return N_dispatch, N_rlh, N_rlh.generators.attrs["rolling_objectives"]
 
 " ____________________ PRINT RESULTS FUNCTION ____________________ "
 
@@ -272,7 +315,9 @@ def make_dispatch_diff_table(dispatch_df):         # Energi difference between P
 
     return pivot.sort_values(["Component", "Carrier"]).reset_index(drop=True)
 
-
+def tot_cost_N(N):
+    return (N.buses_t['marginal_price'].iloc[:, 0] * 
+               N.loads_t.p_set['load']).sum() 
 
 " ____________________ SILENT OPTIMIZE ____________________ "
 
@@ -344,7 +389,7 @@ def plot_electricity_mix(network, save_plot=False, plot_title='Electricity mix',
         plt.savefig("Plots/electricity_mix.png", dpi=300, bbox_inches="tight")
     plt.show()
 
-def plot_dispatch(network, colors=None, save_plots=False, start_hour=0, duration_hours=7 * 24, title="Dispatch"):
+def plot_dispatch_old(network, colors=None, save_plots=False, start_hour=0, duration_hours=7 * 24, title="Dispatch"):
     import matplotlib.pyplot as plt
 
     generators = network.generators.index
@@ -395,6 +440,126 @@ def plot_dispatch(network, colors=None, save_plots=False, start_hour=0, duration
     plt.legend()
     if save_plots:
         plt.savefig(f'./Plots/dispatch_{start_hour}.png', dpi=300, bbox_inches='tight')
+    plt.show()
+
+def plot_dispatch(network, colors=None, save_plots=False,
+                  start_hour=0, duration_hours=7 * 24, interval=None,
+                  title="Dispatch"):
+    """
+    Plot dispatch for a network.
+
+    Parameters
+    ----------
+    network : pypsa.Network-like
+    colors : dict or None
+        mapping from component name -> matplotlib color
+    save_plots : bool
+    start_hour : int
+        only used when `interval` is None (iloc-based slicing)
+    duration_hours : int
+        only used when `interval` is None (iloc-based slicing)
+    interval : tuple (start, end) or None
+        If provided, slices all time series with .loc[start:end] using
+        the network time index. start/end can be pd.Timestamp, string, etc.
+    title : str
+    """
+    import matplotlib.pyplot as plt
+
+    # Determine slicing mode
+    use_label_slice = interval is not None
+    if use_label_slice:
+        start, end = interval
+
+    end_hour = start_hour + duration_hours
+
+    plt.figure(figsize=(12, 5))
+
+    # Plot generator dispatch
+    for generator in network.generators.index:
+        # only plot sizable optimized capacities (keeps behaviour similar to your original)
+        p_nom_opt = network.generators.p_nom_opt.get(generator, 0)
+        if p_nom_opt <= 10:
+            continue
+
+        series = network.generators_t.p[generator]
+
+        if use_label_slice:
+            series_slice = series.loc[start:end]
+        else:
+            series_slice = series.iloc[start_hour:end_hour]
+
+        # defensive: skip empty slices
+        if series_slice.empty:
+            continue
+
+        plt.plot(series_slice.index, series_slice.values,
+                 label=generator,
+                 color=(colors.get(generator) if colors else None))
+
+    # Plot hydro dispatch (storage_units_t.p_dispatch)
+    storage_units = network.storage_units
+    hydro_mask = (storage_units.carrier == "hydro") & (storage_units.bus == "electricity bus")
+    if hydro_mask.any():
+        for idx in storage_units[hydro_mask].index:
+            # some pypsa versions: storage_units_t.p_dispatch or storage_units_t.p
+            # prefer p_dispatch if available
+            if "p_dispatch" in getattr(network.storage_units_t, "columns", []):
+                series = network.storage_units_t.p_dispatch[idx]
+            else:
+                # fallback if different naming
+                series = network.storage_units_t.p[idx]
+
+            if use_label_slice:
+                series_slice = series.loc[start:end]
+            else:
+                series_slice = series.iloc[start_hour:end_hour]
+
+            if series_slice.empty:
+                continue
+
+            plt.plot(series_slice.index, series_slice.values,
+                     label=f"{idx} (hydro dispatch)",
+                     color=(colors.get("hydro") if colors else "green"),
+                     linestyle="--")
+
+    # Plot load (if present)
+    # loads_t.p_set is usually a DataFrame with columns being load names; we used "load"
+    try:
+        load_series = network.loads_t.p_set["load"]
+    except Exception:
+        # try the case where loads_t.p_set has a different structure
+        # pick the first column if "load" not present
+        if hasattr(network.loads_t.p_set, "columns") and len(network.loads_t.p_set.columns) > 0:
+            load_series = network.loads_t.p_set.iloc[:, 0]
+        else:
+            load_series = None
+
+    if load_series is not None:
+        if use_label_slice:
+            load_slice = load_series.loc[start:end]
+        else:
+            load_slice = load_series.iloc[start_hour:end_hour]
+
+        if not load_slice.empty:
+            plt.plot(load_slice.index, load_slice.values,
+                     label="load", color="black", linestyle=":")
+
+    # Formatting
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.title(f'{title}', y=1.07)
+    plt.ylabel('Generation in MWh')
+    plt.grid(True, which='major', alpha=0.25)
+    plt.legend()
+    if save_plots:
+        # derive a simple filename from interval or start_hour
+        if use_label_slice:
+            s = str(start).replace(":", "-")
+            e = str(end).replace(":", "-")
+            fname = f'./Plots/dispatch_{s}_to_{e}.png'
+        else:
+            fname = f'./Plots/dispatch_{start_hour}_{end_hour}.png'
+        plt.savefig(fname, dpi=300, bbox_inches='tight')
     plt.show()
 
 def plot_dispatch_bat(network, colors=None, save_plots=False, start_hour=0, duration_hours=7 * 24, title="Dispatch"):
@@ -561,7 +726,7 @@ def plot_normalized_hydro(network_pf, network_rh, interval=None):
 
 import matplotlib.dates as mdates
 
-def plot_hydro(network_pf, network_rh, interval=None, normalized=True, show_inflow=True, show_dispatch=True, show_soc=True, same_axes=False):
+def plot_hydro_old(network_pf, network_rh, interval=None, normalized=True, show_inflow=True, show_dispatch=True, show_soc=True, same_axes=False):
     # years
     year_pf = network_pf.snapshots[0].year
     year_rh = network_rh.snapshots[0].year
@@ -661,6 +826,106 @@ def plot_hydro(network_pf, network_rh, interval=None, normalized=True, show_infl
         plt.tight_layout()
         return fig, axes
 
+def plot_hydro(network_pf, network_rh, interval=None, normalized=True, show_inflow=True, show_dispatch=True, show_soc=True, same_axes=False):
+    # years
+    year_pf = network_pf.snapshots[0].year
+    year_rh = network_rh.snapshots[0].year
+
+    # inflow source year -> remap to network years and align to snapshots
+    inflow_src = All_data["hydro_inflow"][region]
+    inflow_year = inflow_src[inflow_src.index.year == h_year_dispatch].copy()
+
+    def align_inflow_to_network(inflow, net_year, snaps):
+        s = inflow.copy()
+        s.index = s.index.map(lambda t: t.replace(year=net_year))
+        return s.reindex(snaps).interpolate(limit_direction="both")
+
+    inflow_pf = network_pf.storage_units_t.inflow["Reservoir hydro storage"]
+    inflow_rh = network_rh.storage_units_t.inflow["Reservoir hydro storage"]
+
+    # dispatch & SOC
+    disp_pf = network_pf.storage_units_t.p["Reservoir hydro storage"]
+    soc_pf  = network_pf.storage_units_t.state_of_charge["Reservoir hydro storage"]
+    disp_rh = network_rh.storage_units_t.p["Reservoir hydro storage"]
+    soc_rh  = network_rh.storage_units_t.state_of_charge["Reservoir hydro storage"]
+
+    # optional interval (use datetime strings or Timestamps)
+    if interval is not None:
+        start, end = interval
+        inflow_pf = inflow_pf.loc[start:end];    disp_pf = disp_pf.loc[start:end];    soc_pf = soc_pf.loc[start:end]
+        inflow_rh = inflow_rh.loc[start:end];    disp_rh = disp_rh.loc[start:end];    soc_rh = soc_rh.loc[start:end]
+
+    # normalization helpers
+    def safe_norm(s):
+        m = float(s.max()) if len(s) else 0.0
+        return s / m if m > 0 else s*0.0
+
+    def soc_norm(s):
+        denom = 12700 * 1300
+        return s / denom if denom else s
+
+    # choose data as normalized or raw
+    disp_pf_plot = safe_norm(disp_pf) if normalized else disp_pf
+    disp_rh_plot = safe_norm(disp_rh) if normalized else disp_rh
+    inflow_pf_plot = safe_norm(inflow_pf) if normalized else inflow_pf
+    inflow_rh_plot = safe_norm(inflow_rh) if normalized else inflow_rh
+    soc_pf_plot  = soc_norm(soc_pf) if normalized else soc_pf
+    soc_rh_plot  = soc_norm(soc_rh) if normalized else soc_rh
+
+    # plotting
+    if same_axes:
+        fig, ax = plt.subplots(figsize=(12, 5))
+
+        if show_dispatch:
+            ax.plot(disp_pf_plot, label="Hydro Dispatch PF", color='#6baed6', linestyle='-')
+            ax.plot(disp_rh_plot, label="Hydro Dispatch RH", color='#6baed6', linestyle='--')
+        if show_inflow:
+            ax.plot(inflow_pf_plot, label=f"Inflow PF (yr {h_year_dispatch})", color='tab:blue', linestyle='-')
+            ax.plot(inflow_rh_plot, label=f"Inflow RH (yr {h_year_dispatch})", color='tab:blue', linestyle='--')
+        if show_soc:
+            ax.plot(soc_pf_plot, label="SOC PF", color='tab:green', linestyle='-')
+            ax.plot(soc_rh_plot, label="SOC RH", color='tab:green', linestyle='--')
+
+        ax.set_title(f"{'Normalized ' if normalized else ''}Hydro - PF vs RH - {region} ({year_pf} / {year_rh})")
+        ax.set_ylabel("Normalized" if normalized else "MWh")
+        ax.set_xlabel("Date")
+        if normalized:
+            ax.set_ylim(0, 1.1)
+        ax.grid(True)
+        ax.legend(loc='upper right')
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(mdates.AutoDateLocator()))
+        plt.xticks(rotation=30)
+        plt.tight_layout()
+        return fig, ax
+
+    else:
+        fig, axes = plt.subplots(2, 1, figsize=(12, 5), sharex=True)
+
+        # RH (top)
+        if show_dispatch: axes[0].plot(disp_rh_plot, label="Hydro Dispatch RH", color='#6baed6')
+        if show_inflow:   axes[0].plot(inflow_rh_plot, label=f"Hydro Inflow RH (yr {h_year_dispatch})", color='tab:blue')
+        if show_soc:      axes[0].plot(soc_rh_plot, label="State of Charge RH", color='tab:green')
+        axes[0].set_title(f"{'Normalized ' if normalized else ''}Hydro - Rolling Horizon - {region} {year_rh}")
+        axes[0].set_ylabel("Normalized" if normalized else "MWh")
+        if normalized: axes[0].set_ylim(0, 1.1)
+        axes[0].grid(True); axes[0].legend(loc='upper right')
+
+        # PF (bottom)
+        if show_dispatch: axes[1].plot(disp_pf_plot, label="Hydro Dispatch PF", color='#6baed6')
+        if show_inflow:   axes[1].plot(inflow_pf_plot, label=f"Hydro Inflow PF (yr {h_year_dispatch})", color='tab:blue')
+        if show_soc:      axes[1].plot(soc_pf_plot, label="State of Charge PF", color='tab:green')
+        axes[1].set_title(f"{'Normalized ' if normalized else ''}Hydro - Perfect Foresight - {region} {year_pf}")
+        axes[1].set_xlabel("Date"); axes[1].set_ylabel("Normalized" if normalized else "MWh")
+        if normalized: axes[1].set_ylim(0, 1.1)
+        axes[1].grid(True); axes[1].legend(loc='upper right')
+
+        axes[1].xaxis.set_major_locator(mdates.AutoDateLocator())
+        axes[1].xaxis.set_major_formatter(mdates.ConciseDateFormatter(mdates.AutoDateLocator()))
+        plt.xticks(rotation=30)
+        plt.tight_layout()
+        return fig, axes
+
 def plot_extreme_period(networks_by_year,  # {year: Network}
                                                  extreme_periods_by_year,  # {year: [objects with .period.left/.right]}
                                                  region,
@@ -729,6 +994,46 @@ def plot_extreme_period(networks_by_year,  # {year: Network}
         plt.legend(loc='upper right')
     plt.tight_layout()
     plt.show()
+
+def plot_marginal_prices_old(network_pf, network_rh, month=None, interval=None):
+    # Extract marginal prices (first bus column)
+    mc_pf = network_pf.buses_t['marginal_price'].iloc[:, 0]
+    mc_rh = network_rh.buses_t['marginal_price'].iloc[:, 0]
+
+    # Apply month filter
+    if month is not None:
+        mc_pf = mc_pf[mc_pf.index.month == month]
+        mc_rh = mc_rh[mc_rh.index.month == month]
+
+    # Apply interval filter
+    if interval is not None:
+        start, end = interval
+        mc_pf = mc_pf.loc[start:end]
+        mc_rh = mc_rh.loc[start:end]
+
+    # Plot
+    plt.figure(figsize=(12, 5))
+    plt.plot(mc_pf, label="Marginal prices PF", linestyle="--")
+    plt.plot(mc_rh, label="Marginal prices RH", linestyle=":")
+    plt.xlabel("Time")
+    plt.ylabel("Marginal Price [EUR/MWh]")
+    plt.title("Marginal Prices Comparison PF vs RH")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+    # Cost calculations
+    cost_pf = (network_pf.buses_t['marginal_price'].iloc[:, 0] * 
+               network_pf.loads_t.p_set['load']).sum() / 1e6
+    cost_rh = (network_rh.buses_t['marginal_price'].iloc[:, 0] * 
+               network_rh.loads_t.p_set['load']).sum() / 1e6
+
+    print(f"Sum of marginal prices (PF): {mc_pf.sum():.1f}")
+    print(f"Sum of marginal prices (RH): {mc_rh.sum():.1f}")
+    print(f"Total cost (PF) [MEUR]: {cost_pf:.2f}")
+    print(f"Total cost (RH) [MEUR]: {cost_rh:.2f}")
+    print(f"Total cost difference PF minus RH [MEUR]: {cost_pf - cost_rh:.2f}")
 
 def plot_marginal_prices(network_pf, network_rh, month=None, interval=None):
     # Extract marginal prices (first bus column)

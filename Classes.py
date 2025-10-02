@@ -996,8 +996,8 @@ class Build_dispatch_network_hMC:
                     cyclic_state_of_charge=False,
                     inflow=self.data_dict[self.region]['hydro'].values.flatten(),
                     state_of_charge_initial= (12700 * 1300)*0.3 ,  # Initial storage capacity in MWh
-                    marginal_cost=self.costs.at["OCGT", "marginal_cost"]*0.80,  
-                    spill_cost = 3000,
+                    marginal_cost=self.costs.at["OCGT", "marginal_cost"]*0.50,  
+                    spill_cost = 100,
                     capital_cost=0)
     
     def extract_data(self, region: str, weather_year: int, hydro_year: int, demand_year: int):

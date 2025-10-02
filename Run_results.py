@@ -52,9 +52,9 @@ Results_path = os.path.join(base_dir, "Results")
 os.makedirs(N_results_path, exist_ok=True)
 weather_years = All_data['solar'].index.year.unique()
 
-Test_name = "_0BS_hSPC"  # Name to append to files for identification
+Test_name = "_0BS_100SPC_hMC_50"  # Name to append to files for identification
 
-#%%         RUN EXPANSION MODEL
+#%%        RUN EXPANSION MODEL
 " Running just one time for testing purposes "
 # N_class = Build_network_capacity_exp(weather_year=w_year_exp, hydro_year=h_year_exp, demand_year=d_year_exp,
 #     data=All_data, cost_data=Cost, setup=setup_exp)
@@ -143,111 +143,6 @@ else:
     opt_capacities_df = pd.read_csv(os.path.join(Results_path, Name), header=[0,1], index_col=0)
 
 #print(opt_capacities_df.head(7))
-
-#%%
-from typing import Sequence, Any
-from pypsa import Network
-import logging
-from types import MethodType
-
-logger = logging.getLogger(__name__)
-
-" Virkede i første omgang men uden at save obj"
-# def optimize_with_rolling_horizon_collect(
-#     self,
-#     snapshots: Sequence | None = None,
-#     horizon: int = 100,
-#     overlap: int = 0,
-#     **kwargs: Any,
-# ) -> Network:
-#     """Like PyPSA's optimize_with_rolling_horizon, but collects objectives per run."""
-#     n = self.n
-#     if snapshots is None:
-#         snapshots = n.snapshots
-#     if horizon <= overlap:
-#         raise ValueError("overlap must be smaller than horizon")
-
-#     starting_points = range(0, len(snapshots), horizon - overlap)
-#     objs, runs = [], []
-
-#     for i, start in enumerate(starting_points):
-#         end = min(len(snapshots), start + horizon)
-#         sns = snapshots[start:end]
-#         logger.info(
-#             "Optimizing network for snapshot horizon [%s:%s] (%s/%s).",
-#             sns[0], sns[-1], i + 1, len(starting_points),
-#         )
-
-#         if i:
-#             if not n.c.stores.static.empty:
-#                 n.c.stores.static.e_initial = n.c.stores.dynamic.e.loc[snapshots[start - 1]]
-#             if not n.c.storage_units.static.empty:
-#                 n.c.storage_units.static.state_of_charge_initial = (
-#                     n.c.storage_units.dynamic.state_of_charge.loc[snapshots[start - 1]]
-#                 )
-
-#         status, condition = n.optimize(sns, **kwargs)
-#         if status != "ok":
-#             logger.warning("Optimization failed with status %s and condition %s", status, condition)
-#         else:
-#             # collect objective and run meta
-#             if hasattr(n, "objective"):
-#                 objs.append(n.objective)
-#                 runs.append({"run": i + 1, "start": sns[0], "end": sns[-1]})
-
-#     # attach results to the network for later access
-#     n.rolling_objectives = objs
-#     n.rolling_runs = runs
-#     return n
-
-def optimize_with_rolling_horizon_collect(self, snapshots=None, horizon=100, overlap=0, **kwargs):
-    """
-    Custom rolling horizon optimization that also collects objectives
-    and stores them in n.attrs.
-    """
-    n = self.n   # <- works for your PyPSA version
-
-    if snapshots is None:
-        snapshots = n.snapshots
-
-    if horizon <= overlap:
-        raise ValueError("overlap must be smaller than horizon")
-
-    objs, runs = [], []
-
-    for i in range(0, len(snapshots), horizon - overlap):
-        start = i
-        end = min(len(snapshots), i + horizon)
-        sns = snapshots[start:end]
-
-        if i:
-            if not n.stores.empty:
-                n.stores.e_initial = n.stores_t.e.loc[snapshots[start - 1]]
-            if not n.storage_units.empty:
-                n.storage_units.state_of_charge_initial = (
-                    n.storage_units_t.state_of_charge.loc[snapshots[start - 1]]
-                )
-
-        status, condition = n.optimize(sns, **kwargs)
-
-        if status != "ok":
-            logger.warning(
-                "Optimization failed with status %s and condition %s",
-                status, condition
-            )
-
-        if hasattr(n, "objective"):
-            objs.append(n.objective)
-            runs.append({"run": i + 1, "start": sns[0], "end": sns[-1]})
-
-    # Save to attrs so it survives export_to_netcdf
-    n.generators.attrs["rolling_objectives"] = objs
-    n.generators.attrs["rolling_runs"] = runs
-
-    return n
-
-
-
 
 #%%        RUN DISPATCH MODEL
 " Running just one time for testing purposes "
