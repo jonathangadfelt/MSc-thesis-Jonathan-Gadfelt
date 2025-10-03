@@ -52,7 +52,7 @@ Results_path = os.path.join(base_dir, "Results")
 os.makedirs(N_results_path, exist_ok=True)
 weather_years = All_data['solar'].index.year.unique()
 
-Test_name = "_0BS_100SPC_hMC_50"  # Name to append to files for identification
+Test_name = "_0BS_100SPC_hMC_90"  # Name to append to files for identification
 
 #%%        RUN EXPANSION MODEL
 " Running just one time for testing purposes "
