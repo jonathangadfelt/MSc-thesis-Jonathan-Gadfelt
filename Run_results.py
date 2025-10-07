@@ -16,7 +16,7 @@ setup_exp = {
         'fuel cell': False,
         'Hydrogen storage': False,
         'Reservoir hydro storage': True,
-        'Load shedding': False
+        'load shedding': False
     }
 }
 
@@ -52,7 +52,7 @@ Results_path = os.path.join(base_dir, "Results")
 os.makedirs(N_results_path, exist_ok=True)
 weather_years = All_data['solar'].index.year.unique()
 
-Test_name = "_0BS_100SPC_hMC_90"  # Name to append to files for identification
+Test_name = "_0BS_100SPC_hMC_50"  # Name to append to files for identification
 
 #%%        RUN EXPANSION MODEL
 " Running just one time for testing purposes "
@@ -66,7 +66,7 @@ Test_name = "_0BS_100SPC_hMC_90"  # Name to append to files for identification
 
 " Running for all weather years "
 
-save_network = False
+save_network = True
 
 if save_network:
     # make experiment subfolder
@@ -75,7 +75,7 @@ if save_network:
     os.makedirs(exp_path, exist_ok=True)
 
     for year in weather_years:
-        N = Build_network_capacity_exp_gas(weather_year=year, hydro_year=h_year_exp, demand_year=d_year_exp,
+        N = Build_network_capacity_exp(weather_year=year, hydro_year=h_year_exp, demand_year=d_year_exp,
             data=All_data, cost_data=Cost, setup=setup_exp).network
 
         silent_optimize(N)
@@ -88,8 +88,8 @@ if save_network:
 ##%        Read saved networks an create summary of capacities 
 " Read saved networks and create summary of capacities "
 
-New_results = False  # Set to False to load existing results file
-Test_key = "_hMC"
+New_results = True  # Set to False to load existing results file
+Test_key = "_hMC"   # for loading existing results file
 
 if New_results:
     # Initialize
@@ -124,7 +124,7 @@ if New_results:
 
     # Combine all into one DataFrame
     aggregated_df = pd.concat(results_exp_wo_LS, axis=1)
-
+    
     # Compute extended statistics
     stats_dict = {
         component: df.describe(percentiles=[0.25, 0.5, 0.75]).loc[
@@ -163,7 +163,7 @@ else:
 d_horizon = 7 
 h_overlap = 0  
 
-save_networks_RH = True  
+save_networks_RH = False  
 
 if save_networks_RH:
     # create subfolders for PF and RH

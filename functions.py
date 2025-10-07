@@ -113,12 +113,13 @@ All_data = load_all_data()
 Cost = CostGeneration(year=2025)
 
 " ____________________ ROLLING HORIZON ____________________ "
+# NEW VERSION: 
 def optimize_with_rolling_horizon_collect(self, snapshots=None, horizon=100, overlap=0, **kwargs):
     """
-    Custom rolling horizon optimization that also collects objectives
+    Custom rolling horizon optimization that collects objectives
     and stores them in n.attrs.
     """
-    n = self.n   # <- works for your PyPSA version
+    n = self  
 
     if snapshots is None:
         snapshots = n.snapshots
@@ -153,40 +154,36 @@ def optimize_with_rolling_horizon_collect(self, snapshots=None, horizon=100, ove
             objs.append(n.objective)
             runs.append({"run": i + 1, "start": sns[0], "end": sns[-1]})
 
-    # Save to attrs so it survives export_to_netcdf
+    # Store results in network attributes
     n.generators.attrs["rolling_objectives"] = objs
     n.generators.attrs["rolling_runs"] = runs
 
     return n
 
-def rh_pf_test_yearly(test_year):    
-    N_dispatch_class = Build_dispatch_network_hMC(
-        opt_capacities_df=opt_capacities_df.loc["75%"], # HUSK AT SØRG FOR OPT CAPACITIES ER LOADED FØRST 
-        weather_year=test_year, hydro_year=h_year_dispatch, demand_year=d_year_dispatch,
-        data=All_data, cost_data=Cost, setup=setup_dispatch)
 
+def rh_pf_test_yearly(test_year):    
+    N_dispatch_class = Build_dispatch_network(
+        opt_capacities_df=opt_capacities_df.loc["75%"],
+        weather_year=test_year, hydro_year=h_year_dispatch, demand_year=d_year_dispatch,
+        data=All_data, cost_data=Cost, setup=setup_dispatch
+    )
     N_dispatch = N_dispatch_class.network
     silent_optimize(N_dispatch)
 
-    N_rlh_class = Build_dispatch_network_hMC(
+    N_rlh_class = Build_dispatch_network(
         opt_capacities_df=opt_capacities_df.loc["75%"],
-        weather_year=test_year, 
-        hydro_year=h_year_dispatch, 
-        demand_year=d_year_dispatch,
-        data=All_data, cost_data=Cost, setup=setup_dispatch)
+        weather_year=test_year, hydro_year=h_year_dispatch, demand_year=d_year_dispatch,
+        data=All_data, cost_data=Cost, setup=setup_dispatch
+    )
     N_rlh = N_rlh_class.network
 
+    # Patch onto the Network itself
+    N_rlh.optimize_with_rolling_horizon = MethodType(optimize_with_rolling_horizon_collect, N_rlh)
 
-    # --- monkey-patch onto your network instance ---
-    # net_rh = ...  # your network
-    N_rlh.optimize.optimize_with_rolling_horizon = MethodType(
-        optimize_with_rolling_horizon_collect, N_rlh.optimize
-    )
-
-
-    N_rlh.optimize.optimize_with_rolling_horizon(
+    # Run the rolling-horizon optimization
+    N_rlh.optimize_with_rolling_horizon(
         snapshots=N_rlh.snapshots,
-        horizon=24*7,
+        horizon=24 * 7,
         overlap=0,
         solver_name="gurobi",
         solver_options={"OutputFlag": 0},
@@ -194,6 +191,7 @@ def rh_pf_test_yearly(test_year):
     )
 
     return N_dispatch, N_rlh, N_rlh.generators.attrs["rolling_objectives"]
+
 
 " ____________________ PRINT RESULTS FUNCTION ____________________ "
 
@@ -995,46 +993,6 @@ def plot_extreme_period(networks_by_year,  # {year: Network}
     plt.tight_layout()
     plt.show()
 
-def plot_marginal_prices_old(network_pf, network_rh, month=None, interval=None):
-    # Extract marginal prices (first bus column)
-    mc_pf = network_pf.buses_t['marginal_price'].iloc[:, 0]
-    mc_rh = network_rh.buses_t['marginal_price'].iloc[:, 0]
-
-    # Apply month filter
-    if month is not None:
-        mc_pf = mc_pf[mc_pf.index.month == month]
-        mc_rh = mc_rh[mc_rh.index.month == month]
-
-    # Apply interval filter
-    if interval is not None:
-        start, end = interval
-        mc_pf = mc_pf.loc[start:end]
-        mc_rh = mc_rh.loc[start:end]
-
-    # Plot
-    plt.figure(figsize=(12, 5))
-    plt.plot(mc_pf, label="Marginal prices PF", linestyle="--")
-    plt.plot(mc_rh, label="Marginal prices RH", linestyle=":")
-    plt.xlabel("Time")
-    plt.ylabel("Marginal Price [EUR/MWh]")
-    plt.title("Marginal Prices Comparison PF vs RH")
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.show()
-
-    # Cost calculations
-    cost_pf = (network_pf.buses_t['marginal_price'].iloc[:, 0] * 
-               network_pf.loads_t.p_set['load']).sum() / 1e6
-    cost_rh = (network_rh.buses_t['marginal_price'].iloc[:, 0] * 
-               network_rh.loads_t.p_set['load']).sum() / 1e6
-
-    print(f"Sum of marginal prices (PF): {mc_pf.sum():.1f}")
-    print(f"Sum of marginal prices (RH): {mc_rh.sum():.1f}")
-    print(f"Total cost (PF) [MEUR]: {cost_pf:.2f}")
-    print(f"Total cost (RH) [MEUR]: {cost_rh:.2f}")
-    print(f"Total cost difference PF minus RH [MEUR]: {cost_pf - cost_rh:.2f}")
-
 def plot_marginal_prices(network_pf, network_rh, month=None, interval=None):
     # Extract marginal prices (first bus column)
     mc_pf = network_pf.buses_t['marginal_price'].iloc[:, 0]
@@ -1073,7 +1031,8 @@ def plot_marginal_prices(network_pf, network_rh, month=None, interval=None):
     print(f"Sum of marginal prices (RH): {mc_rh.sum():.1f}")
     print(f"Total cost (PF) [MEUR]: {cost_pf:.2f}")
     print(f"Total cost (RH) [MEUR]: {cost_rh:.2f}")
-    print(f"Total cost difference PF minus RH [MEUR]: {cost_pf - cost_rh:.2f}")
+    print(f"Total cost difference PF minus RH [MEUR]: {cost_rh - cost_pf:.2f}")
+
 
 
 " ____________________ Unique prices ____________________ "

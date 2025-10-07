@@ -1,163 +1,83 @@
-# Dispatch plots for all regions
-# %%
-def plot_dispatch(network_obj, save_plots=False):
-    generators = network_obj.network.generators.index
-    storage_units = network_obj.network.storage_units
-    regions = list(network_obj.setup.keys()) if hasattr(network_obj, "setup") else [""]
 
-    for region in regions:
-        plt.figure(figsize=(10, 5))
 
-        # Plot generator dispatch
-        for generator in generators:
-            name = generator  # no region suffix anymore
-            if network_obj.network.generators.p_nom_opt.get(generator, 0) > 10:
-                plt.plot(
-                    network_obj.network.generators_t.p[generator][0:7 * 24],
-                    label=name,
-                    color=network_obj.colors.get(name, None)
+# %% Rolling horizon patching for old pypsa
+# OLD VERSION for OLDER PYPSA VERSIONS
+def optimize_with_rolling_horizon_collect(self, snapshots=None, horizon=100, overlap=0, **kwargs):
+    """
+    Custom rolling horizon optimization that also collects objectives
+    and stores them in n.attrs.
+    """
+    n = self.n   # <- works for your PyPSA version
+
+    if snapshots is None:
+        snapshots = n.snapshots
+
+    if horizon <= overlap:
+        raise ValueError("overlap must be smaller than horizon")
+
+    objs, runs = [], []
+
+    for i in range(0, len(snapshots), horizon - overlap):
+        start = i
+        end = min(len(snapshots), i + horizon)
+        sns = snapshots[start:end]
+
+        if i:
+            if not n.stores.empty:
+                n.stores.e_initial = n.stores_t.e.loc[snapshots[start - 1]]
+            if not n.storage_units.empty:
+                n.storage_units.state_of_charge_initial = (
+                    n.storage_units_t.state_of_charge.loc[snapshots[start - 1]]
                 )
 
-        # Plot hydro dispatch (StorageUnit)
-        hydro_mask = (storage_units.carrier == "hydro") & (storage_units.bus == "electricity bus")
-        if hydro_mask.any():
-            for idx in storage_units[hydro_mask].index:
-                plt.plot(
-                    network_obj.network.storage_units_t.p_dispatch[idx][0:7 * 24],
-                    label="hydro dispatch",
-                    color=network_obj.colors.get("hydro", "blue"),
-                    linestyle="--"
-                )
-                plt.plot(
-                    network_obj.network.storage_units_t.state_of_charge[idx][0:7 * 24],
-                    label="hydro soc",
-                    color="green",
-                    linestyle="-.",
-                    linewidth=1.5
-                )
+        status, condition = n.optimize(sns, **kwargs)
 
-        # Plot load
-        load_name = 'load'
-        if load_name in network_obj.network.loads.index:
-            plt.plot(
-                network_obj.network.loads_t.p_set[load_name][0:7 * 24],
-                label="load",
-                color="black",
-                linestyle=":"
+        if status != "ok":
+            logger.warning(
+                "Optimization failed with status %s and condition %s",
+                status, condition
             )
 
-        plt.title(f'Dispatch Winter - {region}', y=1.07)
-        plt.ylabel('Generation in MWh')
-        plt.grid(True, which='major', alpha=0.25)
-        plt.legend()
-        if save_plots:
-            plt.savefig(f'./Plots/dispatch_{region}_winter.png', dpi=300, bbox_inches='tight')
-        plt.show()
+        if hasattr(n, "objective"):
+            objs.append(n.objective)
+            runs.append({"run": i + 1, "start": sns[0], "end": sns[-1]})
 
-        # Summer Plot
-        plt.figure(figsize=(10, 5))
-        for generator in generators:
-            name = generator  # updated
-            if network_obj.network.generators.p_nom_opt.get(generator, 0) > 10:
-                plt.plot(
-                    network_obj.network.generators_t.p[generator][4993: 4993 + 7 * 24],
-                    label=name,
-                    color=network_obj.colors.get(name, None)
-                )
+    # Save to attrs so it survives export_to_netcdf
+    n.generators.attrs["rolling_objectives"] = objs
+    n.generators.attrs["rolling_runs"] = runs
 
-        if hydro_mask.any():
-            for idx in storage_units[hydro_mask].index:
-                plt.plot(
-                    network_obj.network.storage_units_t.p_dispatch[idx][4993: 4993 + 7 * 24],
-                    label="hydro dispatch",
-                    color=network_obj.colors.get("hydro", "blue"),
-                    linestyle="--"
-                )
-                plt.plot(
-                    network_obj.network.storage_units_t.state_of_charge[idx][4993: 4993 + 7 * 24],
-                    label="hydro soc",
-                    color="green",
-                    linestyle="-.",
-                    linewidth=1.5
-                )
+    return n
+#%% Rolling horizon patching for old pypsa
+def rh_pf_test_yearly(test_year):    
+    N_dispatch_class = Build_dispatch_network_hMC(
+        opt_capacities_df=opt_capacities_df.loc["75%"], # HUSK AT SØRG FOR OPT CAPACITIES ER LOADED FØRST 
+        weather_year=test_year, hydro_year=h_year_dispatch, demand_year=d_year_dispatch,
+        data=All_data, cost_data=Cost, setup=setup_dispatch)
 
-        if load_name in network_obj.network.loads.index:
-            plt.plot(
-                network_obj.network.loads_t.p_set[load_name][4993: 4993 + 7 * 24],
-                label="load",
-                color="black",
-                linestyle=":"
-            )
+    N_dispatch = N_dispatch_class.network
+    silent_optimize(N_dispatch)
 
-        plt.title(f'Dispatch Summer - {region}', y=1.07)
-        plt.ylabel('Generation in MWh')
-        plt.legend()
-        plt.grid(True, which='major', alpha=0.25)
-        if save_plots:
-            plt.savefig(f'./Plots/dispatch_{region}_summer.png', dpi=300, bbox_inches='tight')
-        plt.show()
+    N_rlh_class = Build_dispatch_network_hMC(
+        opt_capacities_df=opt_capacities_df.loc["75%"],
+        weather_year=test_year, 
+        hydro_year=h_year_dispatch, 
+        demand_year=d_year_dispatch,
+        data=All_data, cost_data=Cost, setup=setup_dispatch)
+    N_rlh = N_rlh_class.network
 
 
-# another dispatch plot function
-# %% another dispatch plot
-def plot_dispatch(network_obj, save_plots=False, start_hour=0, duration_hours=7 * 24):
-    generators = network_obj.network.generators.index
-    storage_units = network_obj.network.storage_units
-    regions = list(network_obj.setup.keys()) if hasattr(network_obj, "setup") else [""]
+    # --- monkey-patch onto your network instance ---
+    # net_rh = ...  # your network
+    N_rlh.optimize.optimize_with_rolling_horizon = MethodType(
+        optimize_with_rolling_horizon_collect, N_rlh.optimize    )
+    
+    N_rlh.optimize_with_rolling_horizon(
+        snapshots=N_rlh.snapshots,
+        horizon=24*7,
+        overlap=0,
+        solver_name="gurobi",
+        solver_options={"OutputFlag": 0},
+        assign_all_duals=True
+    )
 
-    end_hour = start_hour + duration_hours
-
-    for region in regions:
-        plt.figure(figsize=(10, 5))
-
-        # Plot generator dispatch
-        for generator in generators:
-            name = generator  # no region suffix
-            if network_obj.network.generators.p_nom_opt.get(generator, 0) > 10:
-                plt.plot(
-                    network_obj.network.generators_t.p[generator][start_hour:end_hour],
-                    label=name,
-                    color=network_obj.colors.get(name, None)
-                )
-
-        # Plot hydro dispatch
-        hydro_mask = (storage_units.carrier == "hydro") & (storage_units.bus == "electricity bus")
-        if hydro_mask.any():
-            for idx in storage_units[hydro_mask].index:
-                plt.plot(
-                    network_obj.network.storage_units_t.p_dispatch[idx][start_hour:end_hour],
-                    label="hydro dispatch",
-                    color=network_obj.colors.get("hydro", "green"),
-                    linestyle="--"
-                )
-                # plt.plot(
-                #     network_obj.network.storage_units_t.state_of_charge[idx][start_hour:end_hour],
-                #     label="hydro soc",
-                #     color="green",
-                #     linestyle="-.",
-                #     linewidth=1.5
-                # )
-
-        # Plot load
-        load_name = 'load'
-        if load_name in network_obj.network.loads.index:
-            plt.plot(
-                network_obj.network.loads_t.p_set[load_name][start_hour:end_hour],
-                label="load",
-                color="black",
-                linestyle=":"
-            )
-
-        # Plot formatting
-        plt.title(f'Dispatch [{start_hour}:{end_hour}] - {region}', y=1.07)
-        plt.ylabel('Generation in MWh')
-        plt.grid(True, which='major', alpha=0.25)
-        plt.legend()
-        if save_plots:
-            plt.savefig(f'./Plots/dispatch_{region}_{start_hour}.png', dpi=300, bbox_inches='tight')
-        plt.show()
-
-
-# %% 
-
-#%%
+    return N_dispatch, N_rlh, N_rlh.generators.attrs["rolling_objectives"]

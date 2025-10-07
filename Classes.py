@@ -195,7 +195,8 @@ class Build_network_capacity_exp:
                     cyclic_state_of_charge=False,
                     state_of_charge_initial= (12700 * 1300)*0.3 ,  # Initial storage capacity in MWh
                     inflow=self.data_dict[self.region]['hydro'].values.flatten(),
-                    marginal_cost=self.costs.at["onwind", "marginal_cost"]*1.2,  # higher than wind to prioritize wind usage
+                    marginal_cost=self.costs.at["OCGT", "marginal_cost"]*0.50,  # higher than wind to prioritize wind usage
+                    spill_cost=100,
                     capital_cost=0
                     )
 
@@ -452,7 +453,7 @@ class Build_network_capacity_exp_gas:
         return extracted  
 
 
-
+# Not used atm.
 class Build_network_capacity_exp_bat_S_unit:
     def __init__(
         self,
@@ -664,8 +665,7 @@ class Build_network_capacity_exp_bat_S_unit:
         return extracted  
 
 
-
-class Build_dispatch_network:
+class old_Build_dispatch_network:
     def __init__(
         self,
         opt_capacities_df: pd.DataFrame,
@@ -845,7 +845,7 @@ class Build_dispatch_network:
 
         return extracted    
 
-class Build_dispatch_network_hMC:
+class Build_dispatch_network:
     def __init__(
         self,
         opt_capacities_df: pd.DataFrame,
@@ -996,7 +996,7 @@ class Build_dispatch_network_hMC:
                     cyclic_state_of_charge=False,
                     inflow=self.data_dict[self.region]['hydro'].values.flatten(),
                     state_of_charge_initial= (12700 * 1300)*0.3 ,  # Initial storage capacity in MWh
-                    marginal_cost=self.costs.at["OCGT", "marginal_cost"]*0.90,  
+                    marginal_cost=self.costs.at["OCGT", "marginal_cost"]*0.50,  
                     spill_cost = 100,
                     capital_cost=0)
     
