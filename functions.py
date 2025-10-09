@@ -387,6 +387,55 @@ def plot_electricity_mix(network, save_plot=False, plot_title='Electricity mix',
         plt.savefig("Plots/electricity_mix.png", dpi=300, bbox_inches="tight")
     plt.show()
 
+def plot_price_duration_curve(N, descending=True, show_percentile_axis=True, title=None):
+    """
+    Plot a price duration curve for the electricity bus in network N.
+    Unweighted. Automatically picks the electricity bus.
+    """
+
+    # 1) Find electricity bus from N.buses
+    if "carrier" not in N.buses.columns:
+        raise ValueError("N.buses has no 'carrier' column; cannot auto-detect electricity bus.")
+    cand = N.buses.index[N.buses["carrier"].astype(str).str.lower().isin(["electricity", "ac"])]
+    if len(cand) == 0:
+        raise ValueError("No bus with carrier 'electricity' or 'AC' found.")
+    if len(cand) > 1:
+        print(f"Multiple electricity-like buses detected. Using: {cand[0]}")
+    bus = cand[0]
+
+    # 2) Ensure marginal prices exist and bus is present
+    if not hasattr(N, "buses_t") or "marginal_price" not in N.buses_t:
+        raise ValueError("Marginal prices not available. Solve with duals (e.g., assign_all_duals=True).")
+    if bus not in N.buses_t.marginal_price.columns:
+        # fall back to first available priced bus
+        avail = list(N.buses_t.marginal_price.columns)
+        raise ValueError(f"Bus '{bus}' has no marginal prices. Available priced buses: {avail[:5]}{'...' if len(avail)>5 else ''}")
+
+    s = N.buses_t.marginal_price[bus].dropna()
+
+    # 3) Sort for duration curve
+    s_sorted = s.sort_values(ascending=not descending).to_numpy()
+    n = len(s_sorted)
+
+    # 4) X axis
+    if show_percentile_axis:
+        x = np.linspace(0, 100, n, endpoint=False)
+        x_label = "Percent of time [%]"
+    else:
+        x = np.arange(n)
+        x_label = "Time steps"
+
+    # 5) Plot
+    plt.figure(figsize=(7, 4))
+    plt.step(x, s_sorted, where="post", label=f"Bus {bus}")
+    plt.grid(True, alpha=0.3)
+    plt.xlabel(x_label)
+    plt.ylabel("Marginal price [EUR/MWh]")
+    plt.title(title or "Price duration curve")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
 def plot_dispatch_old(network, colors=None, save_plots=False, start_hour=0, duration_hours=7 * 24, title="Dispatch"):
     import matplotlib.pyplot as plt
 
